@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Any, Mapping
 from uuid import UUID
 
 from django.db import transaction
@@ -59,7 +60,8 @@ from apps.payment.exceptions import (
     GatewayTimeout,
     GatewayUnavailable,
 )
-from apps.payment.gateways import get_payment_gateway
+from apps.payment.gateways import get_gateway, get_payment_gateway
+from apps.payment.gateways.base import ChargeResult
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +372,36 @@ class PaymentService:
             raise GatewayDeclined(error_code=result.error_code, detail=result.error_message)
 
         return payment
+
+    def process_payment(
+        self,
+        gateway_name: str,
+        amount: Decimal,
+        currency: str,
+        data: Mapping[str, Any] | None = None,
+    ) -> ChargeResult:
+        """Single-step charge facade.
+
+        Resolves ``gateway_name`` in the registry and delegates to the
+        gateway's ``charge(amount, currency, data)`` method.  No DB writes,
+        no FSM transitions, no Celery — suitable for simple one-shot payment
+        flows or for calling from outside a tenant context.
+
+        Args:
+            gateway_name: Registered gateway slug (e.g. ``"dummy"``,
+                          ``"stripe"``).
+            amount:       Charge amount (positive ``Decimal``).
+            currency:     ISO 4217 currency code (e.g. ``"USD"``).
+            data:         Optional free-form dict forwarded to the gateway.
+
+        Returns:
+            ``ChargeResult`` — inspect ``result.success`` to determine outcome.
+
+        Raises:
+            ``UnsupportedGateway``: if ``gateway_name`` is not registered.
+        """
+        gateway = get_gateway(gateway_name)
+        return gateway.charge(amount, currency, data)
 
     # ------------------------------------------------------------------
     # Private helpers

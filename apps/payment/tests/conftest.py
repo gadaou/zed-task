@@ -34,6 +34,7 @@ import pytest
 
 from apps.payment.gateways.dummy import (
     DummyFailingGateway,
+    DummyGateway,
     DummySuccessGateway,
     DummyTimeoutGateway,
 )
@@ -50,6 +51,7 @@ _DUMMY_SLUGS = [
     DummySuccessGateway.slug,
     DummyFailingGateway.slug,
     DummyTimeoutGateway.slug,
+    DummyGateway.slug,
     "mock",
 ]
 
@@ -82,6 +84,7 @@ def register_dummies():
     register_payment_gateway(DummySuccessGateway.slug, DummySuccessGateway)
     register_payment_gateway(DummyFailingGateway.slug, DummyFailingGateway)
     register_payment_gateway(DummyTimeoutGateway.slug, DummyTimeoutGateway)
+    register_payment_gateway(DummyGateway.slug, DummyGateway)
     register_payment_gateway("mock", DummySuccessGateway)
 
     yield

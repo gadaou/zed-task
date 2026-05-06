@@ -172,3 +172,184 @@ def enqueue_authorize_payment(payment_id: UUID) -> None:
         args=[str(payment_id)],
         queue="payments",
     )
+
+
+# ---------------------------------------------------------------------------
+# process_payment — order-keyed entrypoint
+# ---------------------------------------------------------------------------
+
+
+@shared_task(
+    bind=True,
+    queue="payments",
+    max_retries=5,
+    autoretry_for=(GatewayTimeout, GatewayUnavailable),
+    retry_backoff=True,
+    retry_jitter=True,
+    acks_late=True,
+)
+def process_payment(self, order_id: str) -> dict:
+    """Process (authorise) the payment for the given order.
+
+    This is a thin order-keyed wrapper around the ``authorize_payment``
+    task and ``PaymentService.authorize_payment``.  It resolves the
+    ``Payment`` from the ``Order``, performs a cheap idempotency check,
+    and delegates all FSM transitions to the service layer.
+
+    Args:
+        order_id: UUID string of the ``Order`` whose payment should be
+                  authorised.
+
+    Returns:
+        A dict with ``order_id``, ``payment_id``, and ``status`` for
+        Celery result storage.
+
+    Retry strategy:
+        ``GatewayTimeout`` and ``GatewayUnavailable`` are retried with
+        exponential back-off + jitter, max 5 attempts.
+        ``GatewayDeclined`` is terminal — the service has already written
+        ``FAILED`` to the DB; no retry.
+
+    Idempotency:
+        If the resolved payment is already in a terminal status, the task
+        returns immediately without calling the gateway.  The service layer
+        adds a second guard (terminal-state check) and the DB enforces
+        atomicity via a status-guarded ``UPDATE … WHERE status=REQUIRES_CONFIRMATION``.
+    """
+    from apps.order.models import Order
+    from apps.payment.models import Payment
+    from apps.payment.services import PaymentService
+    from apps.tenant.context import tenant_context
+
+    order_uuid = UUID(order_id)
+
+    # ------------------------------------------------------------------
+    # Load the order cross-tenant to resolve the tenant context.
+    # ------------------------------------------------------------------
+    try:
+        order = (
+            Order.objects.all_tenants()
+            .select_related("tenant")
+            .get(pk=order_uuid)
+        )
+    except Order.DoesNotExist:
+        logger.error(
+            "process_payment: Order %s not found — skipping.",
+            order_id,
+        )
+        return {"order_id": order_id, "status": "not_found"}
+
+    with tenant_context(order.tenant):
+        # ------------------------------------------------------------------
+        # Resolve the Payment linked to the order's cart.
+        # ------------------------------------------------------------------
+        payment = (
+            Payment.objects.filter(cart=order.cart)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if payment is None:
+            logger.error(
+                "process_payment: No Payment found for order %s (cart %s) — skipping.",
+                order_id,
+                order.cart_id,
+            )
+            return {"order_id": order_id, "status": "no_payment"}
+
+        # ------------------------------------------------------------------
+        # Fast idempotency check — skip if already past REQUIRES_CONFIRMATION.
+        # ------------------------------------------------------------------
+        if payment.status in _TERMINAL_STATUSES:
+            logger.info(
+                "process_payment: Payment %s for order %s already in terminal state %s — idempotent skip.",
+                payment.id,
+                order_id,
+                payment.status,
+            )
+            return {
+                "order_id": order_id,
+                "payment_id": str(payment.id),
+                "status": payment.status,
+            }
+
+        logger.info(
+            "process_payment: authorising payment %s for order %s via provider '%s'",
+            payment.id,
+            order_id,
+            payment.provider,
+        )
+
+        # ------------------------------------------------------------------
+        # Delegate to the service layer.
+        # ------------------------------------------------------------------
+        try:
+            updated = PaymentService().authorize_payment(payment.id)
+            logger.info(
+                "process_payment: Payment %s for order %s → %s",
+                payment.id,
+                order_id,
+                updated.status,
+            )
+            return {
+                "order_id": order_id,
+                "payment_id": str(payment.id),
+                "status": updated.status,
+            }
+
+        except GatewayDeclined as exc:
+            # Service has already written FAILED to the DB.
+            logger.info(
+                "process_payment: Payment %s for order %s declined by gateway: %s",
+                payment.id,
+                order_id,
+                exc.error_code,
+            )
+            return {
+                "order_id": order_id,
+                "payment_id": str(payment.id),
+                "status": "FAILED",
+            }
+
+        except UnsupportedGateway as exc:
+            # Configuration error — no point retrying.
+            logger.error(
+                "process_payment: Payment %s for order %s uses unregistered gateway '%s' — "
+                "marking FAILED (no retry).",
+                payment.id,
+                order_id,
+                exc.slug,
+            )
+            from django.db import transaction as _tx
+
+            with _tx.atomic():
+                Payment.objects.filter(
+                    pk=payment.pk,
+                    status=Payment.Status.REQUIRES_CONFIRMATION,
+                ).update(
+                    status=Payment.Status.FAILED,
+                    failure_reason=str(exc)[:255],
+                )
+            return {
+                "order_id": order_id,
+                "payment_id": str(payment.id),
+                "status": "FAILED",
+            }
+
+        # GatewayTimeout and GatewayUnavailable are handled by autoretry_for
+        # and propagate naturally — no explicit except needed.
+
+
+def enqueue_process_payment(order_id: UUID) -> None:
+    """Dispatch ``process_payment`` to the Celery ``payments`` queue.
+
+    Wrapping the task dispatch in a named function keeps callers
+    independent of Celery imports — tests can replace this with a no-op.
+
+    Must be called inside ``transaction.on_commit(...)`` so the task is
+    only enqueued after a successful commit.
+    """
+    process_payment.apply_async(
+        args=[str(order_id)],
+        queue="payments",
+    )

@@ -25,6 +25,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 
@@ -79,6 +80,25 @@ class RefundResult:
     success: bool
     reference: str = ""
     refunded_amount: Decimal = Decimal("0")
+    error_code: str = ""
+    error_message: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ChargeResult:
+    """Outcome of a ``PaymentGateway.charge`` call.
+
+    A lightweight, single-step result for use with the ``charge(amount,
+    currency, data)`` facade.  On success ``success=True`` and ``reference``
+    holds the gateway-side charge identifier.  On failure ``success=False``
+    and ``error_code`` / ``error_message`` carry the decline reason.
+    """
+
+    success: bool
+    reference: str = ""
+    amount: Decimal = Decimal("0")
+    currency: str = ""
     error_code: str = ""
     error_message: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
@@ -190,3 +210,45 @@ class PaymentGateway(abc.ABC):
             ``RefundResult`` with ``success=True`` and ``refunded_amount`` set
             to the actual amount refunded.
         """
+
+    def charge(
+        self,
+        amount: Decimal,
+        currency: str,
+        data: Mapping[str, Any] | None = None,
+    ) -> ChargeResult:
+        """Single-step charge facade.
+
+        Default implementation delegates to ``authorize_payment`` using
+        lightweight stand-in objects so no real ``Order`` or ``PaymentMethod``
+        ORM instance is required.  Concrete gateways may override this method
+        to call a provider's one-shot charge endpoint directly.
+
+        Args:
+            amount:   Charge amount (positive ``Decimal``).
+            currency: ISO 4217 currency code (e.g. ``"USD"``).
+            data:     Optional free-form dict forwarded to the gateway as
+                      metadata (e.g. ``{"order_id": "...", "customer": "..."}``)
+
+        Returns:
+            ``ChargeResult`` with ``success=True`` and a non-empty
+            ``reference`` on success, or ``success=False`` with populated
+            ``error_code``/``error_message`` on decline.
+        """
+        data = dict(data or {})
+        fake_order = SimpleNamespace(
+            id=data.get("order_id"),
+            total=Decimal(amount),
+            currency=currency,
+        )
+        fake_pm = SimpleNamespace(gateway_slug=self.slug)
+        auth = self.authorize_payment(fake_order, fake_pm, metadata=data)
+        return ChargeResult(
+            success=auth.success,
+            reference=auth.reference,
+            amount=Decimal(amount),
+            currency=currency,
+            error_code=auth.error_code,
+            error_message=auth.error_message,
+            raw=dict(auth.raw),
+        )

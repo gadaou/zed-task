@@ -103,3 +103,14 @@ def registered_gateways() -> list[str]:
     Useful for admin tooling and health-check endpoints.
     """
     return sorted(_REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# Short-name aliases for the charge() facade API
+# ---------------------------------------------------------------------------
+
+#: Alias for :func:`register_payment_gateway`.
+register_gateway = register_payment_gateway
+
+#: Alias for :func:`get_payment_gateway`.
+get_gateway = get_payment_gateway

@@ -38,6 +38,7 @@ from apps.payment.exceptions import GatewayTimeout
 from apps.payment.gateways.base import (
     AuthorizationResult,
     CaptureResult,
+    ChargeResult,
     PaymentGateway,
     RefundResult,
     VoidResult,
@@ -176,6 +177,78 @@ class DummyTimeoutGateway(PaymentGateway):
         raise GatewayTimeout("DummyTimeoutGateway: simulated refund timeout")
 
 
+class DummyGateway(PaymentGateway):
+    """Configurable, deterministic gateway for the simple ``charge()`` facade.
+
+    Behaviour is controlled entirely via the ``data`` dict passed to
+    ``charge()``:
+
+    - ``data={}`` or ``data=None``               → success with a synthetic reference.
+    - ``data={"decline": True}``                 → failure with ``error_code="card_declined"``.
+    - ``data={"decline": True, "error_code": X}``→ failure with custom code.
+
+    The four FSM methods (authorize/capture/void/refund) are implemented as
+    always-successful stubs so this gateway satisfies the ``PaymentGateway``
+    ABC and can be used anywhere the FSM interface is required.
+    """
+
+    slug = "dummy"
+
+    def charge(
+        self,
+        amount: Decimal,
+        currency: str,
+        data: Mapping[str, Any] | None = None,
+    ) -> ChargeResult:
+        data = dict(data or {})
+        if data.get("decline"):
+            return ChargeResult(
+                success=False,
+                amount=Decimal(amount),
+                currency=currency,
+                error_code=data.get("error_code", "card_declined"),
+                error_message=data.get("error_message", "Your card was declined."),
+            )
+        ref = f"dummy-charge-{uuid.uuid4().hex}"
+        logger.debug("DummyGateway.charge: ref=%s amount=%s%s", ref, amount, currency)
+        return ChargeResult(
+            success=True,
+            reference=ref,
+            amount=Decimal(amount),
+            currency=currency,
+            raw={"data": data},
+        )
+
+    def authorize_payment(
+        self,
+        order: Any,
+        payment_method: Any,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> AuthorizationResult:
+        return AuthorizationResult(
+            success=True, reference=f"dummy-auth-{uuid.uuid4().hex}"
+        )
+
+    def capture_payment(self, payment_reference: str) -> CaptureResult:
+        return CaptureResult(
+            success=True, reference=f"dummy-capture-{uuid.uuid4().hex}"
+        )
+
+    def void_payment(self, payment_reference: str) -> VoidResult:
+        return VoidResult(success=True, reference=f"dummy-void-{uuid.uuid4().hex}")
+
+    def refund_payment(
+        self,
+        payment_reference: str,
+        amount: Decimal | None = None,
+    ) -> RefundResult:
+        return RefundResult(
+            success=True,
+            reference=f"dummy-refund-{uuid.uuid4().hex}",
+            refunded_amount=Decimal(amount) if amount is not None else Decimal("0"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Auto-registration — runs when this module is first imported (in PaymentConfig.ready())
 # ---------------------------------------------------------------------------
@@ -187,3 +260,4 @@ register_payment_gateway(DummyTimeoutGateway.slug, DummyTimeoutGateway)
 # breaking any external tooling or fixtures that may reference the old slug
 # before all callers are migrated to "dummy_success".
 register_payment_gateway("mock", DummySuccessGateway)
+register_payment_gateway(DummyGateway.slug, DummyGateway)

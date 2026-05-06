@@ -17,12 +17,15 @@ registry functions to look up instances at call time.
 from apps.payment.gateways.base import (
     AuthorizationResult,
     CaptureResult,
+    ChargeResult,
     PaymentGateway,
     RefundResult,
     VoidResult,
 )
 from apps.payment.gateways.registry import (
+    get_gateway,
     get_payment_gateway,
+    register_gateway,
     register_payment_gateway,
     registered_gateways,
     unregister_payment_gateway,
@@ -36,9 +39,13 @@ __all__ = [
     "CaptureResult",
     "VoidResult",
     "RefundResult",
-    # Registry
+    "ChargeResult",
+    # Registry — full names
     "register_payment_gateway",
     "get_payment_gateway",
     "unregister_payment_gateway",
     "registered_gateways",
+    # Registry — short aliases (charge facade)
+    "register_gateway",
+    "get_gateway",
 ]
