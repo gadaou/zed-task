@@ -9,6 +9,10 @@ from . import views
 app_name = "core"
 
 urlpatterns = [
-    path("healthz", views.healthz, name="healthz"),
-    path("readyz", views.readyz, name="readyz"),
+    # Production-style probe endpoints.
+    path("health/", views.health, name="health"),
+    path("ready/", views.ready, name="ready"),
+    # Compatibility aliases retained for existing infra/scripts.
+    path("healthz", views.health, name="healthz"),
+    path("readyz", views.ready, name="readyz"),
 ]

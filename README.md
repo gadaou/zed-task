@@ -1,5 +1,247 @@
 # cart_system
 
+Multi-tenant cart and checkout service built for a single-deployment SaaS commerce model: one codebase, one PostgreSQL cluster, one Redis cluster, many tenants.
+
+The system contract lives in [`PROJECT_SPEC.md`](PROJECT_SPEC.md). The implementation snapshot and flow details live in [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## 1) Project Overview
+
+`cart_system` is a multi-tenant commerce backend designed to keep cart and checkout flows reliable under shared infrastructure.
+
+- **Multi-tenant by construction**: tenancy is encoded in request handling, ORM access patterns, lock keys, and service boundaries.
+- **Single database model**: all tenants share one PostgreSQL source of truth using `tenant_id` scoped data access.
+- **Always-online posture**: cart reads remain available even when payment/invoice pipelines degrade; checkout paths prioritize safe partial degradation over hard downtime.
+
+---
+
+## 2) Architecture
+
+Core stack:
+
+- **Django + Django REST Framework** for API delivery and service-layer architecture.
+- **PostgreSQL** as the system of record for all tenant data.
+- **Redis** for distributed locks, idempotency in-progress markers, and cache/coordination concerns.
+- **Celery** for async workloads such as payment authorization/finalization and invoice/notification pipelines.
+
+High-level request flow:
+
+`Client -> DRF View -> Service Layer -> PostgreSQL (+ Redis coordination) -> on_commit -> Celery Worker -> Gateway`
+
+---
+
+## 3) Core Features
+
+Current service scope centers on cart and checkout operations:
+
+- Add product to cart
+- Remove product from cart
+- Apply coupon to cart
+- Remove coupon from cart
+- Add address
+- Add payment method
+- Checkout cart
+
+Endpoints are versioned under `/api/v1/` and follow resource-oriented conventions.
+
+---
+
+## 4) Reliability Features
+
+The reliability model combines database guarantees with distributed coordination:
+
+- **Tenant isolation** via middleware + tenant-aware ORM manager + tenant-led indexes
+- **Transactional boundaries** around critical mutations using `transaction.atomic()`
+- **Row-level serialization** with `select_for_update` on sensitive state transitions
+- **Redis distributed locks** for cross-process checkout serialization (`SET NX PX` + fenced unlock)
+- **Idempotency** for checkout using `Idempotency-Key` and durable replay records
+- **Conditional stock deduction** (`UPDATE ... WHERE stock >= qty`) to prevent negative stock races
+- **`transaction.on_commit` discipline** so async tasks are only dispatched after successful commit
+
+---
+
+## 5) Payment System
+
+Payments use a pluggable gateway architecture behind a stable abstraction.
+
+- Domain/services depend on a `PaymentGateway` interface, not concrete providers
+- Gateways are resolved through a registry (`register_payment_gateway`, `get_payment_gateway`)
+- No `if/else` provider branching in service flow
+
+For assignment/testing, deterministic dummy gateways are included:
+
+- `DummySuccessGateway`
+- `DummyFailingGateway`
+- `DummyTimeoutGateway`
+
+To add a real gateway later:
+
+1. Implement the `PaymentGateway` interface
+2. Register it in the gateway registry
+3. Add contract tests against the shared gateway contract suite
+4. Configure tenant/provider mapping to point at the new slug
+
+See [`docs/payment-gateways.md`](docs/payment-gateways.md).
+
+---
+
+## 6) Coupon System
+
+Coupons are implemented with a rule-based constraint model and transactional safety:
+
+- **Rule registry** for extensible constraint validation (open for extension)
+- **Usage limits** enforced with conditional increments and DB constraints
+- **Stacking policy** support (single-only / one-per-type / unlimited patterns)
+- **Checkout revalidation** to catch drift between coupon apply-time and checkout-time
+
+This preserves correctness under concurrency and evolving cart state.
+
+---
+
+## 7) Bonus Features
+
+Planned and/or partially implemented bonus scope includes:
+
+- **Invoice handling**: async invoice creation and delivery pipeline
+- **Advanced coupon constraints**: subtotal, location, segment, usage, validity windows, allow/deny lists
+- **B2B support**: approvals, payment terms, B2B checkout states (where implemented)
+
+Authoritative roadmap and constraints: [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
+
+---
+
+## 8) API Documentation
+
+- Swagger UI: `http://localhost:8000/api/docs/`
+- OpenAPI schema: `http://localhost:8000/api/schema/`
+- ReDoc: `http://localhost:8000/api/redoc/`
+
+Required headers:
+
+- `X-Tenant-Domain` on tenant-scoped endpoints
+- `Idempotency-Key` on checkout (`POST /api/v1/carts/{cart_id}/checkout`)
+
+Health endpoints:
+
+- `GET /health/` (liveness)
+- `GET /ready/` (readiness)
+- `GET /healthz` and `GET /readyz` are compatibility aliases.
+
+Reminder:
+
+- `/health/` checks application liveness.
+- `/ready/` checks whether required dependencies such as PostgreSQL and Redis are available.
+
+---
+
+## 9) How to Run
+
+### Local (current, canonical)
+
+```bash
+# 1) Setup
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 2) Environment
+cp .env.example .env
+# update DATABASE_URL / REDIS_URL and related settings
+
+# 3) Migrate
+python manage.py migrate
+
+# 4) Run API
+python manage.py runserver
+
+# 5) Run tests
+DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
+```
+
+### Docker Compose (when compose file is present)
+
+> The current repository snapshot does not include `docker-compose.yml`. If/when compose is added, standard workflow is:
+
+```bash
+docker compose up -d --build
+docker compose exec web python manage.py migrate
+docker compose exec web pytest -q
+```
+
+---
+
+## 10) Trade-offs
+
+Key architectural trade-offs are intentional:
+
+- **Shared DB + `tenant_id`**
+  - Pros: operational simplicity, cheap tenant onboarding, unified migrations
+  - Trade-off: larger blast radius if primary DB degrades
+- **Async payment processing**
+  - Pros: resilient checkout UX, retryable gateway interactions
+  - Trade-off: eventual consistency on final payment state
+- **Redis + PostgreSQL hybrid idempotency**
+  - Pros: fast in-progress guard + durable replay guarantee
+  - Trade-off: dual-store operational complexity
+- **No real external gateway integration yet**
+  - Pros: deterministic tests, clean boundary-first architecture
+  - Trade-off: provider-specific behavior deferred to later iterations
+
+---
+
+## Repository Layout
+
+```text
+.
+├── PROJECT_SPEC.md
+├── README.md
+├── manage.py
+├── requirements.txt
+├── cart_system/
+│   ├── settings/
+│   ├── urls.py
+│   └── celery.py
+├── apps/
+│   ├── core/
+│   ├── tenant/
+│   ├── catalog/
+│   ├── cart/
+│   ├── coupon/
+│   ├── addresses/
+│   ├── payment/
+│   └── order/
+└── docs/
+    ├── architecture.md
+    ├── payment-gateways.md
+    └── openapi.yaml
+```
+
+---
+
+## Contributing
+
+1. Read [`PROJECT_SPEC.md`](PROJECT_SPEC.md) first.
+2. Reference the exact spec section your change implements.
+3. Keep diffs focused and reversible.
+4. Add tests for all service-layer behavior changes.
+5. Document non-obvious decisions with concise ADR notes close to code.
+
+---
+
+## License
+
+TBD.
+
+---
+
+## Legacy README (Preserved)
+
+Below is the original README content, kept intact per your request.
+
+# cart_system
+
 Multi-tenant cart and checkout service. Single Django + DRF deployment, single PostgreSQL database, strict tenant isolation, pluggable payment gateways.
 
 The architectural contract for the system is [`PROJECT_SPEC.md`](PROJECT_SPEC.md). Every change in this repository should trace back to a section in that document.

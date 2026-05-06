@@ -123,6 +123,8 @@ MIDDLEWARE = [
 # requirement.  Override in environment-specific settings if needed.
 TENANT_EXEMPT_PATHS: list[str] = [
     "/admin/",
+    "/health/",
+    "/ready/",
     "/healthz",
     "/readyz",
     "/api/schema/",
