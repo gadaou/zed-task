@@ -111,6 +111,15 @@ def dispatched(monkeypatch):
 
 BASE = "/api/v1/cart"
 
+# URL path constants — all action paths use trailing slashes per Django convention.
+_ADD_PRODUCT = BASE + "/add-product/"
+_REMOVE_PRODUCT = BASE + "/remove-product/"
+_ADD_COUPON = BASE + "/add-coupon/"
+_REMOVE_COUPON = BASE + "/remove-coupon/"
+_ADD_ADDRESS = BASE + "/add-address/"
+_ADD_PAYMENT_METHOD = BASE + "/add-payment-method/"
+_CHECKOUT = BASE + "/checkout/"
+
 
 def _headers(domain: str, user: uuid.UUID | None = None) -> dict:
     h = {"HTTP_X_TENANT_DOMAIN": domain}
@@ -176,7 +185,7 @@ def test_get_cart_missing_tenant(api_client, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_product_happy_path(api_client, tenant, user_id, product):
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(product.id), "quantity": 2},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -191,7 +200,7 @@ def test_add_product_happy_path(api_client, tenant, user_id, product):
 @pytest.mark.django_db(transaction=True)
 def test_add_product_missing_user_id(api_client, tenant, product):
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(product.id), "quantity": 1},
         format="json",
         **_headers(tenant.domain),
@@ -203,7 +212,7 @@ def test_add_product_missing_user_id(api_client, tenant, product):
 @pytest.mark.django_db(transaction=True)
 def test_add_product_missing_fields(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -215,7 +224,7 @@ def test_add_product_missing_fields(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_product_zero_quantity_rejected(api_client, tenant, user_id, product):
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(product.id), "quantity": 0},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -226,7 +235,7 @@ def test_add_product_zero_quantity_rejected(api_client, tenant, user_id, product
 @pytest.mark.django_db(transaction=True)
 def test_add_product_unknown_product_returns_404(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(uuid.uuid4()), "quantity": 1},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -238,13 +247,13 @@ def test_add_product_unknown_product_returns_404(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_product_twice_merges_quantity(api_client, tenant, user_id, product):
     api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(product.id), "quantity": 1},
         format="json",
         **_headers(tenant.domain, user_id),
     )
     resp = api_client.post(
-        BASE + "/add-product",
+        _ADD_PRODUCT,
         data={"product_id": str(product.id), "quantity": 3},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -265,7 +274,7 @@ def test_remove_product_happy_path(api_client, tenant, user_id, product):
     add_product_to_cart(cart, product, quantity=1)
 
     resp = api_client.post(
-        BASE + "/remove-product",
+        _REMOVE_PRODUCT,
         data={"product_id": str(product.id)},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -279,7 +288,7 @@ def test_remove_product_happy_path(api_client, tenant, user_id, product):
 def test_remove_product_idempotent(api_client, tenant, user_id):
     """Removing a product not in the cart should not raise — idempotent."""
     resp = api_client.post(
-        BASE + "/remove-product",
+        _REMOVE_PRODUCT,
         data={"product_id": str(uuid.uuid4())},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -290,7 +299,7 @@ def test_remove_product_idempotent(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_remove_product_missing_user_id(api_client, tenant):
     resp = api_client.post(
-        BASE + "/remove-product",
+        _REMOVE_PRODUCT,
         data={"product_id": str(uuid.uuid4())},
         format="json",
         **_headers(tenant.domain),
@@ -299,7 +308,7 @@ def test_remove_product_missing_user_id(api_client, tenant):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/cart/apply-coupon
+# POST /api/v1/cart/add-coupon
 # ---------------------------------------------------------------------------
 
 
@@ -309,7 +318,7 @@ def test_apply_coupon_happy_path(api_client, tenant, user_id, product, coupon):
     add_product_to_cart(cart, product, quantity=2)
 
     resp = api_client.post(
-        BASE + "/apply-coupon",
+        _ADD_COUPON,
         data={"code": coupon.code},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -329,7 +338,7 @@ def test_apply_coupon_unknown_code_returns_422(api_client, tenant, user_id, prod
     add_product_to_cart(cart, product, quantity=1)
 
     resp = api_client.post(
-        BASE + "/apply-coupon",
+        _ADD_COUPON,
         data={"code": "DOESNOTEXIST"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -341,7 +350,7 @@ def test_apply_coupon_unknown_code_returns_422(api_client, tenant, user_id, prod
 @pytest.mark.django_db(transaction=True)
 def test_apply_coupon_missing_code(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/apply-coupon",
+        _ADD_COUPON,
         data={},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -362,7 +371,7 @@ def test_remove_coupon_happy_path(api_client, tenant, user_id, product, coupon):
     CouponService().apply_coupon_to_cart(cart, coupon.code)
 
     resp = api_client.post(
-        BASE + "/remove-coupon",
+        _REMOVE_COUPON,
         data={"coupon_id": str(coupon.id)},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -376,7 +385,7 @@ def test_remove_coupon_happy_path(api_client, tenant, user_id, product, coupon):
 def test_remove_coupon_idempotent(api_client, tenant, user_id):
     """Removing a coupon not on the cart is a no-op (idempotent)."""
     resp = api_client.post(
-        BASE + "/remove-coupon",
+        _REMOVE_COUPON,
         data={"coupon_id": str(uuid.uuid4())},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -392,7 +401,7 @@ def test_remove_coupon_idempotent(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_address_happy_path(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-address",
+        _ADD_ADDRESS,
         data={"country": "US", "city": "Springfield", "details": "742 Evergreen Terrace"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -408,7 +417,7 @@ def test_add_address_happy_path(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_address_sets_selected_on_cart(api_client, tenant, user_id):
     api_client.post(
-        BASE + "/add-address",
+        _ADD_ADDRESS,
         data={"country": "SA", "city": "Riyadh", "details": "King Fahd Road"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -420,7 +429,7 @@ def test_add_address_sets_selected_on_cart(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_address_invalid_country_code(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-address",
+        _ADD_ADDRESS,
         data={"country": "USA", "city": "NY", "details": "5th Ave"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -431,7 +440,7 @@ def test_add_address_invalid_country_code(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_address_missing_fields(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-address",
+        _ADD_ADDRESS,
         data={"country": "US"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -447,7 +456,7 @@ def test_add_address_missing_fields(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_payment_method_happy_path(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-payment-method",
+        _ADD_PAYMENT_METHOD,
         data={"gateway_slug": "dummy_success"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -462,7 +471,7 @@ def test_add_payment_method_happy_path(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_payment_method_unknown_gateway(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-payment-method",
+        _ADD_PAYMENT_METHOD,
         data={"gateway_slug": "stripe_not_registered"},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -474,7 +483,7 @@ def test_add_payment_method_unknown_gateway(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_add_payment_method_missing_slug(api_client, tenant, user_id):
     resp = api_client.post(
-        BASE + "/add-payment-method",
+        _ADD_PAYMENT_METHOD,
         data={},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -502,7 +511,7 @@ def ready_cart(tenant, user_id, product, payment_method, address):
 @pytest.mark.django_db(transaction=True)
 def test_checkout_returns_202(api_client, tenant, user_id, ready_cart, dispatched):
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
@@ -518,7 +527,7 @@ def test_checkout_returns_202(api_client, tenant, user_id, ready_cart, dispatche
 @pytest.mark.django_db(transaction=True)
 def test_checkout_missing_idempotency_key(api_client, tenant, user_id, ready_cart):
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         **_headers(tenant.domain, user_id),
@@ -530,7 +539,7 @@ def test_checkout_missing_idempotency_key(api_client, tenant, user_id, ready_car
 @pytest.mark.django_db(transaction=True)
 def test_checkout_invalid_idempotency_key(api_client, tenant, user_id, ready_cart):
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY="not-a-uuid",
@@ -548,7 +557,7 @@ def test_checkout_no_selected_address(api_client, tenant, user_id, product, paym
     cart.save(update_fields=["selected_payment_method"])
 
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
@@ -566,7 +575,7 @@ def test_checkout_no_selected_payment_method(api_client, tenant, user_id, produc
     cart.save(update_fields=["selected_address"])
 
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
@@ -579,7 +588,7 @@ def test_checkout_no_selected_payment_method(api_client, tenant, user_id, produc
 @pytest.mark.django_db(transaction=True)
 def test_checkout_missing_user_id(api_client, tenant, ready_cart):
     resp = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
@@ -594,14 +603,14 @@ def test_checkout_idempotent_replay(api_client, tenant, user_id, ready_cart, dis
     key = str(uuid.uuid4())
 
     r1 = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=key,
         **_headers(tenant.domain, user_id),
     )
     r2 = api_client.post(
-        BASE + "/checkout",
+        _CHECKOUT,
         data={},
         format="json",
         HTTP_IDEMPOTENCY_KEY=key,
@@ -609,3 +618,80 @@ def test_checkout_idempotent_replay(api_client, tenant, user_id, ready_cart, dis
     )
     assert r1.status_code == r2.status_code == 202
     assert r1.json()["order_id"] == r2.json()["order_id"]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/carts/{cart_id}/checkout/  — legacy resource-oriented endpoint
+# Ownership and cross-tenant enforcement
+# ---------------------------------------------------------------------------
+
+CARTS_BASE = "/api/v1/carts"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cart_id_checkout_rejects_wrong_user_id(
+    api_client, tenant, user_id, ready_cart, dispatched
+):
+    """When X-User-Id does not match cart.user_id the response is 403."""
+    other_user = uuid.uuid4()
+    resp = api_client.post(
+        f"{CARTS_BASE}/{ready_cart.id}/checkout/",
+        data={
+            "payment_method_id": str(ready_cart.selected_payment_method_id),
+            "address_id": str(ready_cart.selected_address_id),
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        **_headers(tenant.domain, other_user),
+    )
+    assert resp.status_code == 403
+    assert "cart/forbidden" in resp.json().get("type", "")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cart_id_checkout_succeeds_for_correct_user_id(
+    api_client, tenant, user_id, ready_cart, dispatched
+):
+    """CheckoutView accepts the request when X-User-Id matches cart.user_id."""
+    resp = api_client.post(
+        f"{CARTS_BASE}/{ready_cart.id}/checkout/",
+        data={
+            "payment_method_id": str(ready_cart.selected_payment_method_id),
+            "address_id": str(ready_cart.selected_address_id),
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        **_headers(tenant.domain, user_id),
+    )
+    assert resp.status_code == 202
+
+
+@pytest.mark.django_db(transaction=True)
+def test_tenant_a_cannot_checkout_tenant_b_cart(api_client, monkeypatch):
+    """A cart_id that belongs to tenant B is not found when queried under tenant A."""
+    import fakeredis
+    monkeypatch.setattr("apps.core.redis.get_redis_client", lambda: fakeredis.FakeRedis(decode_responses=True))
+
+    from apps.tenant.models import Tenant
+    from apps.tenant.context import tenant_context
+
+    tenant_a = Tenant.objects.create(name="A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
+    tenant_b = Tenant.objects.create(name="B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
+
+    user_b = uuid.uuid4()
+    with tenant_context(tenant_b):
+        cart_b = Cart.objects.create(user_id=user_b)
+
+    user_a = uuid.uuid4()
+    resp = api_client.post(
+        f"{CARTS_BASE}/{cart_b.id}/checkout/",
+        data={
+            "payment_method_id": str(uuid.uuid4()),
+            "address_id": str(uuid.uuid4()),
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        HTTP_X_TENANT_DOMAIN=tenant_a.domain,
+        HTTP_X_USER_ID=str(user_a),
+    )
+    assert resp.status_code == 404

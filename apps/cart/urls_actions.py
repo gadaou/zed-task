@@ -7,14 +7,14 @@ resource-oriented ``<uuid:cart_id>/checkout/`` route under the ``carts/``
 
 Endpoint layout
 ---------------
-GET  /api/v1/cart                     CartReadView
-POST /api/v1/cart/add-product         AddProductView
-POST /api/v1/cart/remove-product      RemoveProductView
-POST /api/v1/cart/apply-coupon        ApplyCouponView
-POST /api/v1/cart/remove-coupon       RemoveCouponView
-POST /api/v1/cart/add-address         AddAddressView
-POST /api/v1/cart/add-payment-method  AddPaymentMethodView
-POST /api/v1/cart/checkout            CartCheckoutView
+GET  /api/v1/cart/                      CartReadView
+POST /api/v1/cart/add-product/          AddProductView
+POST /api/v1/cart/remove-product/       RemoveProductView
+POST /api/v1/cart/add-coupon/           ApplyCouponView
+POST /api/v1/cart/remove-coupon/        RemoveCouponView
+POST /api/v1/cart/add-address/          AddAddressView
+POST /api/v1/cart/add-payment-method/   AddPaymentMethodView
+POST /api/v1/cart/checkout/             CartCheckoutView
 """
 
 from __future__ import annotations
@@ -35,27 +35,27 @@ from apps.cart.views import (
 app_name = "cart_actions"
 
 urlpatterns = [
-    # GET /api/v1/cart  — retrieve (or auto-create) the active cart
+    # GET /api/v1/cart/  — retrieve (or auto-create) the active cart
     path("", CartReadView.as_view(), name="read"),
 
-    # POST /api/v1/cart/add-product
-    path("add-product", AddProductView.as_view(), name="add-product"),
+    # POST /api/v1/cart/add-product/
+    path("add-product/", AddProductView.as_view(), name="add-product"),
 
-    # POST /api/v1/cart/remove-product
-    path("remove-product", RemoveProductView.as_view(), name="remove-product"),
+    # POST /api/v1/cart/remove-product/
+    path("remove-product/", RemoveProductView.as_view(), name="remove-product"),
 
-    # POST /api/v1/cart/apply-coupon
-    path("apply-coupon", ApplyCouponView.as_view(), name="apply-coupon"),
+    # POST /api/v1/cart/add-coupon/
+    path("add-coupon/", ApplyCouponView.as_view(), name="add-coupon"),
 
-    # POST /api/v1/cart/remove-coupon
-    path("remove-coupon", RemoveCouponView.as_view(), name="remove-coupon"),
+    # POST /api/v1/cart/remove-coupon/
+    path("remove-coupon/", RemoveCouponView.as_view(), name="remove-coupon"),
 
-    # POST /api/v1/cart/add-address
-    path("add-address", AddAddressView.as_view(), name="add-address"),
+    # POST /api/v1/cart/add-address/
+    path("add-address/", AddAddressView.as_view(), name="add-address"),
 
-    # POST /api/v1/cart/add-payment-method
-    path("add-payment-method", AddPaymentMethodView.as_view(), name="add-payment-method"),
+    # POST /api/v1/cart/add-payment-method/
+    path("add-payment-method/", AddPaymentMethodView.as_view(), name="add-payment-method"),
 
-    # POST /api/v1/cart/checkout
-    path("checkout", CartCheckoutView.as_view(), name="checkout"),
+    # POST /api/v1/cart/checkout/
+    path("checkout/", CartCheckoutView.as_view(), name="checkout"),
 ]

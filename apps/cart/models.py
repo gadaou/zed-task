@@ -166,6 +166,17 @@ class Cart(TenantAwareModel):
                 fields=["tenant", "id"],
                 name="uq_cart_tenant_id",
             ),
+            # DB-level guard: at most one ACTIVE cart per (tenant, user) pair.
+            # Implemented as a PostgreSQL partial unique index so CHECKED_OUT
+            # carts are excluded — a user may accumulate many historical carts
+            # but only one may be ACTIVE at a time.  Paired with
+            # get_or_create_active_cart's get_or_create() call this makes
+            # double-active-cart races impossible even under concurrent requests.
+            models.UniqueConstraint(
+                fields=["tenant", "user_id"],
+                condition=Q(status="ACTIVE"),
+                name="uq_cart_one_active_per_tenant_user",
+            ),
         ]
         indexes = [
             # Primary access pattern: "give me all carts for tenant + user".

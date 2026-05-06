@@ -67,6 +67,31 @@ TENANT_DOMAIN_HEADER = OpenApiParameter(
     ],
 )
 
+USER_ID_HEADER = OpenApiParameter(
+    name="X-User-Id",
+    type=OpenApiTypes.UUID,
+    location=OpenApiParameter.HEADER,
+    required=True,
+    description=(
+        "UUID of the authenticated customer.\n\n"
+        "This is the **interim** user-identity contract until bearer-token "
+        "authentication is wired at the API gateway layer (PROJECT_SPEC §4.3). "
+        "The gateway will inject this header after validating the bearer token; "
+        "until then clients supply it directly.\n\n"
+        "- Missing or non-UUID value → `400 validation/user-id-required`.\n"
+        "- For the resource-oriented `POST /carts/{cart_id}/checkout/` endpoint, "
+        "supplying this header causes the server to verify that the cart's "
+        "`user_id` matches; a mismatch → `403 cart/forbidden`."
+    ),
+    examples=[
+        OpenApiExample(
+            name="Customer UUID",
+            value="d290f1ee-6c54-4b01-90e6-d701748f0851",
+            summary="Typical customer identifier",
+        ),
+    ],
+)
+
 IDEMPOTENCY_KEY_HEADER = OpenApiParameter(
     name="Idempotency-Key",
     type=OpenApiTypes.UUID,

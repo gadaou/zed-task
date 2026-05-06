@@ -42,6 +42,7 @@ from apps.core.exceptions import (
 from apps.core.openapi import (
     IDEMPOTENCY_KEY_HEADER,
     TENANT_DOMAIN_HEADER,
+    USER_ID_HEADER,
     checkout_request_examples,
     checkout_response_examples,
     problem_response,
@@ -62,6 +63,7 @@ from apps.order.exceptions import (
 from apps.order.serializers import CheckoutRequestSerializer, CheckoutResponseSerializer
 from apps.order.services import CheckoutService
 from apps.core.idempotency import compute_request_hash
+from apps.cart.models import Cart
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,7 @@ class CheckoutView(APIView):
         tags=["Checkout"],
         parameters=[
             TENANT_DOMAIN_HEADER,
+            USER_ID_HEADER,
             IDEMPOTENCY_KEY_HEADER,
             OpenApiParameter(
                 name="cart_id",
@@ -148,7 +151,9 @@ class CheckoutView(APIView):
                 location=OpenApiParameter.PATH,
                 description=(
                     "UUID of the `Cart` to check out. Must be `ACTIVE` and "
-                    "owned by the authenticated customer within the current tenant."
+                    "owned by the authenticated customer within the current tenant. "
+                    "When `X-User-Id` is supplied, the cart's `user_id` must match "
+                    "or the request is rejected with `403 cart/forbidden`."
                 ),
             ),
         ],
@@ -174,6 +179,16 @@ class CheckoutView(APIView):
                     "- `Idempotency-Key` header is absent.\n"
                     "- `Idempotency-Key` value is not a valid UUID.\n"
                     "- Request body is missing required fields or contains invalid values."
+                ),
+            ),
+            403: problem_response(
+                403,
+                "cart/forbidden",
+                "Cart does not belong to this user",
+                "cart a1b2c3d4-… belongs to a different user",
+                description=(
+                    "Returned when `X-User-Id` is supplied and the cart's `user_id` "
+                    "does not match. Prevents cross-user cart access."
                 ),
             ),
             404: problem_response(
@@ -241,6 +256,39 @@ class CheckoutView(APIView):
                 {"type": "validation/invalid-input", "errors": serializer.errors},
                 status=400,
             )
+
+        # ------------------------------------------------------------------
+        # 1b. Enforce cart ownership when X-User-Id is present.
+        #
+        # The header is optional here so that internal/admin callers (e.g.
+        # ops tooling, test clients) that do not supply it still work.  When
+        # it IS supplied the cart's user_id must match or we return 403 to
+        # prevent cross-user cart access (PROJECT_SPEC §3.2).
+        #
+        # TenantAwareManager already scopes the query to the current tenant so
+        # a cart_id that belongs to another tenant simply returns DoesNotExist
+        # → 404 from CheckoutService, providing tenant isolation without any
+        # additional filter here.
+        # ------------------------------------------------------------------
+        raw_uid = request.META.get("HTTP_X_USER_ID", "").strip()
+        if raw_uid:
+            try:
+                request_user_id = uuid.UUID(raw_uid)
+            except ValueError:
+                return _problem(
+                    "validation/user-id-required",
+                    "X-User-Id header must be a valid UUID",
+                    400,
+                    f"'{raw_uid}' is not a valid UUID.",
+                )
+            cart_row = Cart.objects.filter(pk=cart_id).values("user_id").first()
+            if cart_row is not None and cart_row["user_id"] != request_user_id:
+                return _problem(
+                    "cart/forbidden",
+                    "Cart does not belong to this user",
+                    403,
+                    f"Cart {cart_id} belongs to a different user.",
+                )
 
         # ------------------------------------------------------------------
         # 2. Parse and validate Idempotency-Key header.

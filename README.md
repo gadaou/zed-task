@@ -47,7 +47,63 @@ Endpoints are versioned under `/api/v1/` and follow resource-oriented convention
 
 ---
 
-## 4) Reliability & Consistency
+## 4) Cart Identification and Routing
+
+### Why customer-facing endpoints do not require a `cart_id`
+
+Traditional resource-oriented APIs use explicit `cart_id` in URLs (`/carts/{cart_id}/...`). This works well for internal or admin tooling but creates friction for end-customers who should not need to manage cart identifiers themselves.
+
+The customer-facing action endpoints instead resolve the **active cart automatically**:
+
+```
+GET  /api/v1/cart/
+POST /api/v1/cart/add-product/
+POST /api/v1/cart/remove-product/
+POST /api/v1/cart/add-coupon/
+POST /api/v1/cart/remove-coupon/
+POST /api/v1/cart/add-address/
+POST /api/v1/cart/add-payment-method/
+POST /api/v1/cart/checkout/
+```
+
+Resolution happens via three inputs, all present on every request:
+
+| Input | Source | Purpose |
+|---|---|---|
+| Tenant | `X-Tenant-Domain` header → `TenantMiddleware` | Scopes all DB queries to the correct tenant |
+| User identity | `X-User-Id` header (UUID) | Identifies the customer within the tenant |
+| Cart status | `Cart.status = ACTIVE` | Selects the in-progress cart, not a historical one |
+
+If no ACTIVE cart exists when the customer first interacts with the API, one is created transparently. The customer never has to manage cart state manually.
+
+### User identity: `X-User-Id` header
+
+`X-User-Id` is the **interim** contract for user identity. The API gateway is responsible for validating the bearer token and injecting this header before the request reaches Django. Until bearer-token middleware lands, clients supply it directly. Missing or malformed values return `400 validation/user-id-required`.
+
+### The unique active-cart constraint
+
+At the database level, a **partial unique index** enforces that only one ACTIVE cart can exist per `(tenant_id, user_id)` pair:
+
+```sql
+CREATE UNIQUE INDEX uq_cart_one_active_per_tenant_user
+    ON cart_cart (tenant_id, user_id)
+    WHERE status = 'ACTIVE';
+```
+
+This makes the GET→INSERT race in `get_or_create_active_cart()` safe: if two concurrent requests both pass the GET phase, only one INSERT wins; the loser retries with a GET and returns the winner's row. CHECKED_OUT carts are excluded from the index, so historical carts never block a new purchase.
+
+### Resource-oriented endpoint: when to use `cart_id`
+
+The legacy endpoint `POST /api/v1/carts/{cart_id}/checkout/` is preserved for **explicit/internal flows** (ops tooling, admin dashboards, integration tests that track a specific cart ID). It enforces:
+
+- Tenant isolation: the cart must belong to the current tenant (enforced by `TenantAwareManager`).
+- User ownership: when `X-User-Id` is present, the cart's `user_id` must match or the request is rejected with `403 cart/forbidden`.
+
+Customer-facing clients should prefer `POST /api/v1/cart/checkout/` (no `cart_id`) for simplicity.
+
+---
+
+## 5) Reliability & Consistency
 
 The reliability model combines database guarantees with distributed coordination:
 

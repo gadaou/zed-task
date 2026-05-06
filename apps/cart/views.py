@@ -33,6 +33,7 @@ import logging
 import uuid
 from uuid import UUID
 
+from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -63,6 +64,12 @@ from apps.core.exceptions import (
     LockNotAcquired,
 )
 from apps.core.idempotency import compute_request_hash
+from apps.core.openapi import (
+    IDEMPOTENCY_KEY_HEADER,
+    TENANT_DOMAIN_HEADER,
+    USER_ID_HEADER,
+    problem_response,
+)
 from apps.core.responses import map_exception, problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.coupon.services import CouponService
@@ -127,6 +134,30 @@ def _cart_response(cart) -> Response:
 # ---------------------------------------------------------------------------
 
 
+_CART_COMMON_ERRORS = {
+    400: problem_response(
+        400,
+        "validation/user-id-required",
+        "X-User-Id header is required or invalid",
+        "Supply a valid UUID in the X-User-Id header.",
+        description=(
+            "Returned when `X-User-Id` is absent or not a valid UUID, or when "
+            "the request body fails serializer validation."
+        ),
+    ),
+    422: problem_response(
+        422,
+        "product/not-found",
+        "Business rule violation",
+        "product cccccccc-… not found",
+        description=(
+            "Returned when a domain invariant is violated (e.g. product not "
+            "found, coupon already applied, coupon expired)."
+        ),
+    ),
+}
+
+
 class CartReadView(APIView):
     """``GET /api/v1/cart``
 
@@ -136,6 +167,26 @@ class CartReadView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_read",
+        summary="Get the caller's active cart",
+        description=(
+            "Returns (or auto-creates) the single **ACTIVE** cart for the "
+            "authenticated customer within the current tenant.\n\n"
+            "No `cart_id` is required — the active cart is resolved from "
+            "`X-Tenant-Domain` + `X-User-Id`. A new cart is transparently "
+            "created on the first call if none exists."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="The caller's active cart.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def get(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -155,6 +206,26 @@ class AddProductView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_add_product",
+        summary="Add a product to the active cart",
+        description=(
+            "Adds `quantity` units of `product_id` to the caller's active cart, "
+            "creating the cart if it does not yet exist.\n\n"
+            "If the product is already in the cart the existing quantity is "
+            "**incremented** — no duplicate line is created."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=AddProductSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after product was added.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -201,6 +272,25 @@ class RemoveProductView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_remove_product",
+        summary="Remove a product from the active cart",
+        description=(
+            "Removes the line for `product_id` from the caller's active cart.\n\n"
+            "**Idempotent** — if the product is not in the cart the call "
+            "succeeds silently and returns the unchanged cart."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=RemoveProductSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after product was removed.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -234,6 +324,27 @@ class ApplyCouponView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_apply_coupon",
+        summary="Apply a coupon to the active cart",
+        description=(
+            "Validates and applies a coupon code to the caller's active cart. "
+            "The discount is computed immediately and stored as a snapshot on "
+            "`CartCoupon.discount_amount`.\n\n"
+            "Returns `422` when the coupon is expired, usage-limit-reached, or "
+            "already applied to this cart."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=ApplyCouponSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with coupon applied.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -269,6 +380,25 @@ class RemoveCouponView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_remove_coupon",
+        summary="Remove a coupon from the active cart",
+        description=(
+            "Removes the applied coupon identified by `coupon_id` from the "
+            "caller's active cart and recalculates the totals.\n\n"
+            "**Idempotent** — removing a coupon that is not applied is a no-op."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=RemoveCouponSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after coupon was removed.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -312,6 +442,25 @@ class AddAddressView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_add_address",
+        summary="Add a shipping address and select it on the active cart",
+        description=(
+            "Creates a new `Address` record for the customer and immediately "
+            "sets it as the `selected_address` on their active cart.\n\n"
+            "This address is required before calling `POST /cart/checkout/`."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=AddAddressSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with the new address selected.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -357,6 +506,27 @@ class AddPaymentMethodView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_add_payment_method",
+        summary="Add a payment method and select it on the active cart",
+        description=(
+            "Creates a new `PaymentMethod` record linked to the given gateway "
+            "and immediately sets it as the `selected_payment_method` on the "
+            "caller's active cart.\n\n"
+            "This payment method is required before calling `POST /cart/checkout/`. "
+            "Returns `422` if `gateway_slug` is not a registered gateway."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=AddPaymentMethodSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with the new payment method selected.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:
@@ -398,6 +568,61 @@ class CartCheckoutView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        operation_id="cart_checkout",
+        summary="Checkout the caller's active cart",
+        description=(
+            "Initiates the checkout flow for the caller's active cart under a "
+            "**distributed Redis lock** and a **Postgres row lock**, guaranteeing "
+            "exactly-one order creation per cart.\n\n"
+            "### Pre-conditions\n\n"
+            "Before calling this endpoint:\n"
+            "1. Call `POST /cart/add-address/` to select a shipping address.\n"
+            "2. Call `POST /cart/add-payment-method/` to select a payment method.\n\n"
+            "Missing either → `422 cart/checkout-incomplete`.\n\n"
+            "### Idempotency\n\n"
+            "Supply a client-generated `Idempotency-Key` UUID. Repeating the "
+            "request with the **same key** returns the stored `202` without "
+            "re-executing the checkout. A different key on the same cart creates "
+            "a second attempt (use only if the first truly failed).\n\n"
+            "### Cart resolution\n\n"
+            "No `cart_id` is required — the active cart is resolved from "
+            "`X-Tenant-Domain` + `X-User-Id`. After a successful checkout the "
+            "cart is marked `CHECKED_OUT` and the constraint "
+            "`uq_cart_one_active_per_tenant_user` allows a fresh ACTIVE cart to "
+            "be created for the next purchase."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, IDEMPOTENCY_KEY_HEADER],
+        responses={
+            202: OpenApiResponse(
+                response=CheckoutResponseSerializer,
+                description=(
+                    "Checkout accepted. Order and payment records created. "
+                    "Payment authorisation is pending on the async Celery worker. "
+                    "Also returned on idempotent replay."
+                ),
+            ),
+            **_CART_COMMON_ERRORS,
+            400: problem_response(
+                400,
+                "validation/idempotency-key-required",
+                "Idempotency-Key header is required or invalid",
+                "Supply a UUID in the Idempotency-Key header.",
+            ),
+            422: problem_response(
+                422,
+                "cart/checkout-incomplete",
+                "Address or payment method not selected",
+                "Call POST /cart/add-address before checking out.",
+                description=(
+                    "Returned when the cart is missing `selected_address` or "
+                    "`selected_payment_method`, or when a domain rule is violated "
+                    "(empty cart, out-of-stock product, expired coupon)."
+                ),
+            ),
+        },
+    )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
         if err:

@@ -6,6 +6,17 @@ writes), and §3.4 (row locks + optimistic version on Cart).
 
 Public API
 ----------
+- ``get_or_create_active_cart(user_id)``
+    Return (or create) the single ACTIVE cart for the current tenant context.
+    Used by all customer-facing action endpoints (no ``cart_id`` required).
+- ``get_active_cart(tenant_id, user_id)``
+    Read-only lookup — returns the ACTIVE cart or ``None``. Accepts an
+    explicit ``tenant_id`` so it can be called outside the implicit
+    thread-local context (e.g. Celery workers, management commands).
+- ``lock_active_cart_for_update(tenant_id, user_id)``
+    Like ``get_active_cart`` but acquires a ``SELECT FOR UPDATE`` row lock.
+    Raises ``CartNotFound`` if no ACTIVE cart exists.  Caller must be inside
+    ``transaction.atomic()``.
 - ``add_product_to_cart(cart, product, quantity)``
     Add (or top-up) a product line on a cart. Captures ``price_snapshot`` at
     add-time per §5.3 — the live catalog price may drift; checkout will
@@ -65,6 +76,12 @@ def get_or_create_active_cart(user_id: UUID) -> Cart:
     If no active cart exists, one is created.  The caller is responsible for
     having an active tenant context (TenantMiddleware or ``tenant_context``).
 
+    The ``uq_cart_one_active_per_tenant_user`` partial unique constraint (added
+    in migration 0005) makes the GET→INSERT race impossible at the DB level:
+    concurrent requests may both pass the GET phase, but only one INSERT will
+    win; the loser gets ``IntegrityError`` and Django's ``get_or_create``
+    retries with another GET, returning the winner's row.
+
     Args:
         user_id: UUID of the customer whose active cart is wanted.
 
@@ -76,6 +93,62 @@ def get_or_create_active_cart(user_id: UUID) -> Cart:
         status=Cart.Status.ACTIVE,
         defaults={"currency": "USD"},
     )
+    return cart
+
+
+def get_active_cart(tenant_id: UUID, user_id: UUID) -> Cart | None:
+    """Return the ACTIVE cart for ``(tenant_id, user_id)`` or ``None``.
+
+    Unlike ``get_or_create_active_cart`` this helper takes an **explicit**
+    ``tenant_id`` argument so it can safely be called from outside the
+    request/response cycle (Celery workers, management commands) where the
+    thread-local tenant context set by ``TenantMiddleware`` may not be
+    present.
+
+    Args:
+        tenant_id: UUID of the tenant that owns the cart.
+        user_id:   UUID of the customer.
+
+    Returns:
+        The ACTIVE Cart, or ``None`` if the customer has no active cart in
+        that tenant.
+    """
+    return (
+        Cart.objects.all_tenants()
+        .filter(tenant_id=tenant_id, user_id=user_id, status=Cart.Status.ACTIVE)
+        .first()
+    )
+
+
+def lock_active_cart_for_update(tenant_id: UUID, user_id: UUID) -> Cart:
+    """Return the ACTIVE cart with a ``SELECT FOR UPDATE`` row lock.
+
+    Provides a safe way for service-layer code that needs to mutate the cart
+    and then perform additional reads in the same transaction to prevent
+    concurrent modifications.
+
+    **Must be called inside a ``transaction.atomic()`` block.**
+
+    Args:
+        tenant_id: UUID of the tenant that owns the cart.
+        user_id:   UUID of the customer.
+
+    Returns:
+        The ACTIVE Cart, locked for the duration of the enclosing transaction.
+
+    Raises:
+        CartNotFound: If no ACTIVE cart exists for the given tenant/user pair.
+    """
+    from apps.order.exceptions import CartNotFound
+
+    cart = (
+        Cart.objects.all_tenants()
+        .select_for_update()
+        .filter(tenant_id=tenant_id, user_id=user_id, status=Cart.Status.ACTIVE)
+        .first()
+    )
+    if cart is None:
+        raise CartNotFound(f"No active cart for user {user_id} in tenant {tenant_id}")
     return cart
 
 
