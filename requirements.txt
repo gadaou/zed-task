@@ -26,6 +26,11 @@ gunicorn==22.*                 # WSGI server for prod; asgi/uvicorn added later
 redis==5.*                     # redis-py 5 — sync client; supports RESP3, decode_responses
 celery==5.*                    # Celery 5 — mature, Django-native, explicit retries/queues
 
+# --- Invoice PDF generation ------------------------------------------------
+# PROJECT_SPEC §2 bonus: Invoice handling. ReportLab produces the one-page
+# PDF receipt written to MEDIA_ROOT/invoices/<invoice_id>.pdf.
+reportlab==4.*
+
 # --- Testing ---------------------------------------------------------------
 # PROJECT_SPEC §6.5 mandates pytest + pytest-django + factory_boy. factory_boy
 # is deferred until model factories are introduced in a later iteration; for

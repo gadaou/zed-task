@@ -5,17 +5,21 @@ because PaymentService uses ``select_for_update`` indirectly and
 ``transaction.atomic()`` with status-guarded UPDATEs.
 
 Test coverage:
-    test_authorize_success          — DummySuccessGateway → AUTHORIZED, reference persisted.
-    test_authorize_declined         — DummyFailingGateway → FAILED, failure_reason set, GatewayDeclined raised.
-    test_authorize_unsupported      — Unknown slug → UnsupportedGateway raised, payment unchanged.
-    test_authorize_timeout          — DummyTimeoutGateway → GatewayTimeout raised, payment stays REQUIRES_CONFIRMATION.
-    test_authorize_idempotent       — Second call with same payment_id returns immediately; no second gateway call.
-    test_authorize_already_failed   — Payment already FAILED → idempotent skip, no gateway call.
-    test_celery_task_idempotent     — Celery task invoked twice; exactly one FSM transition.
-    test_celery_task_unsupported_gw — Task with unregistered provider marks payment FAILED, no retry.
-    test_capture_success            — AUTHORIZED → CAPTURED, capture_id persisted.
-    test_void_success               — AUTHORIZED → CANCELLED.
-    test_refund_success             — CAPTURED → REFUNDED.
+    test_authorize_success              — DummySuccessGateway → AUTHORIZED, reference persisted.
+    test_authorize_flips_order_to_paid  — Successful authorization flips Order.status to PAID.
+    test_authorize_dispatches_invoice   — Successful authorization enqueues generate_invoice.
+    test_authorize_declined             — DummyFailingGateway → FAILED, failure_reason set, GatewayDeclined raised.
+    test_authorize_declined_flips_order_to_failed — Declined authorization flips Order.status to FAILED.
+    test_authorize_declined_no_invoice  — Declined authorization does NOT enqueue generate_invoice.
+    test_authorize_unsupported          — Unknown slug → UnsupportedGateway raised, payment unchanged.
+    test_authorize_timeout              — DummyTimeoutGateway → GatewayTimeout raised, payment stays REQUIRES_CONFIRMATION.
+    test_authorize_idempotent           — Second call with same payment_id returns immediately; no second gateway call.
+    test_authorize_already_failed       — Payment already FAILED → idempotent skip, no gateway call.
+    test_celery_task_idempotent         — Celery task invoked twice; exactly one FSM transition.
+    test_celery_task_unsupported_gw     — Task with unregistered provider marks payment FAILED, no retry.
+    test_capture_success                — AUTHORIZED → CAPTURED, capture_id persisted.
+    test_void_success                   — AUTHORIZED → CANCELLED.
+    test_refund_success                 — CAPTURED → REFUNDED.
 """
 
 from __future__ import annotations
@@ -93,6 +97,41 @@ def test_authorize_success(payment_factory, tenant):
     assert updated.gateway_authorization_id.startswith("dummy-auth-")
 
 
+@pytest.mark.django_db(transaction=True)
+def test_authorize_flips_order_to_paid(payment_factory, tenant):
+    """Successful authorization must flip Order.status to PAID."""
+    from apps.order.models import Order
+
+    payment = payment_factory(provider="dummy_success")
+    order = _build_order_for_payment(payment)
+
+    with patch("apps.invoice.tasks.generate_invoice.apply_async"):
+        PaymentService().authorize_payment(payment.id)
+
+    order.refresh_from_db()
+    assert order.status == "PAID"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_authorize_dispatches_invoice(payment_factory, tenant, settings, tmp_path):
+    """Successful authorization must enqueue generate_invoice on commit."""
+    settings.MEDIA_ROOT = str(tmp_path)
+
+    dispatched: list[str] = []
+
+    def _record(order_id):
+        dispatched.append(str(order_id))
+
+    payment = payment_factory(provider="dummy_success")
+    order = _build_order_for_payment(payment)
+
+    with patch("apps.payment.services.enqueue_generate_invoice", side_effect=_record):
+        PaymentService().authorize_payment(payment.id)
+
+    assert len(dispatched) == 1
+    assert dispatched[0] == str(order.id)
+
+
 # ---------------------------------------------------------------------------
 # Authorization — declined
 # ---------------------------------------------------------------------------
@@ -112,6 +151,39 @@ def test_authorize_declined(payment_factory, tenant):
     payment.refresh_from_db()
     assert payment.status == Payment.Status.FAILED
     assert "card_declined" in payment.failure_reason
+
+
+@pytest.mark.django_db(transaction=True)
+def test_authorize_declined_flips_order_to_failed(payment_factory, tenant):
+    """Gateway decline must flip Order.status to FAILED."""
+    from apps.order.models import Order
+
+    payment = payment_factory(provider="dummy_failing")
+    order = _build_order_for_payment(payment)
+
+    with pytest.raises(GatewayDeclined):
+        PaymentService().authorize_payment(payment.id)
+
+    order.refresh_from_db()
+    assert order.status == "FAILED"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_authorize_declined_no_invoice_dispatch(payment_factory, tenant):
+    """A declined payment must NOT enqueue generate_invoice."""
+    dispatched: list = []
+
+    def _record(order_id):
+        dispatched.append(order_id)
+
+    payment = payment_factory(provider="dummy_failing")
+    _build_order_for_payment(payment)
+
+    with patch("apps.payment.services.enqueue_generate_invoice", side_effect=_record):
+        with pytest.raises(GatewayDeclined):
+            PaymentService().authorize_payment(payment.id)
+
+    assert dispatched == [], "No invoice must be dispatched on a declined payment"
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,9 @@ from decimal import Decimal
 from uuid import UUID
 
 from django.db import transaction
+from django.db.models import F
 
+from apps.invoice.tasks import enqueue_generate_invoice
 from apps.payment.exceptions import (
     GatewayDeclined,
     GatewayTimeout,
@@ -156,6 +158,26 @@ class PaymentService:
                         "AUTHORIZED update — concurrent transition, idempotent skip.",
                         payment_id,
                     )
+
+                # Flip Order.status to PAID (status-guarded — safe against
+                # concurrent retries of this same task).
+                Order.objects.all_tenants().filter(
+                    pk=order.pk,
+                    status="PENDING_PAYMENT",
+                ).update(
+                    status="PAID",
+                    version=F("version") + 1,
+                )
+
+                # Dispatch invoice generation only on commit so a rolled-back
+                # payment transition never produces an orphan invoice task.
+                order_id_snapshot = order.id
+
+                def _dispatch_invoice() -> None:
+                    enqueue_generate_invoice(order_id_snapshot)
+
+                transaction.on_commit(_dispatch_invoice)
+
             payment.refresh_from_db()
             logger.info("PaymentService.authorize_payment: payment %s → AUTHORIZED", payment_id)
         else:
@@ -169,6 +191,16 @@ class PaymentService:
                         f"{result.error_code}: {result.error_message}"
                     )[:255],
                 )
+
+                # Flip Order.status to FAILED (status-guarded).
+                Order.objects.all_tenants().filter(
+                    pk=order.pk,
+                    status="PENDING_PAYMENT",
+                ).update(
+                    status="FAILED",
+                    version=F("version") + 1,
+                )
+
             payment.refresh_from_db()
             logger.info(
                 "PaymentService.authorize_payment: payment %s → FAILED (%s)",

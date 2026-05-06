@@ -96,6 +96,7 @@ LOCAL_APPS = [
     "apps.addresses",
     "apps.payment",
     "apps.order",
+    "apps.invoice",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -193,6 +194,13 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# ---------------------------------------------------------------------------
+# Media files — invoice PDFs are stored here under media/invoices/
+# PROJECT_SPEC §2 bonus: Invoice handling.
+# ---------------------------------------------------------------------------
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # ---------------------------------------------------------------------------
 # Django REST Framework (PROJECT_SPEC §4 / §5.4)
