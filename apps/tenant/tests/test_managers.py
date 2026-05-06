@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
+
 from django.test import TestCase
 
 from apps.cart.models import Cart
@@ -29,12 +31,16 @@ class TenantAwareQuerySetTests(TestCase):
         self.tenant_a = _make_tenant("a.example.com", "Tenant A")
         self.tenant_b = _make_tenant("b.example.com", "Tenant B")
 
+        self.user_a1 = uuid.uuid4()
+        self.user_a2 = uuid.uuid4()
+        self.user_b1 = uuid.uuid4()
+
         with tenant_context(self.tenant_a):
-            self.cart_a1 = Cart.objects.create(reference="a-cart-1")
-            self.cart_a2 = Cart.objects.create(reference="a-cart-2")
+            self.cart_a1 = Cart.objects.create(user_id=self.user_a1)
+            self.cart_a2 = Cart.objects.create(user_id=self.user_a2)
 
         with tenant_context(self.tenant_b):
-            self.cart_b1 = Cart.objects.create(reference="b-cart-1")
+            self.cart_b1 = Cart.objects.create(user_id=self.user_b1)
 
     # ------------------------------------------------------------------
     # all()
@@ -80,12 +86,12 @@ class TenantAwareQuerySetTests(TestCase):
 
     def test_create_stamps_tenant_from_context(self) -> None:
         with tenant_context(self.tenant_a):
-            cart = Cart.objects.create(reference="auto-stamp")
+            cart = Cart.objects.create(user_id=uuid.uuid4())
         self.assertEqual(cart.tenant_id, self.tenant_a.id)
 
     def test_create_outside_context_raises(self) -> None:
         with self.assertRaises(TenantContextMissing):
-            Cart.objects.create(reference="no-context")
+            Cart.objects.create(user_id=uuid.uuid4())
 
     # ------------------------------------------------------------------
     # filter()
@@ -93,13 +99,13 @@ class TenantAwareQuerySetTests(TestCase):
 
     def test_filter_scoped_to_current_tenant(self) -> None:
         with tenant_context(self.tenant_a):
-            qs = Cart.objects.filter(reference="a-cart-1")
+            qs = Cart.objects.filter(id=self.cart_a1.id)
         self.assertEqual(qs.count(), 1)
         self.assertEqual(qs.first().id, self.cart_a1.id)
 
     def test_filter_cannot_see_other_tenant_rows(self) -> None:
         with tenant_context(self.tenant_a):
-            qs = Cart.objects.filter(reference="b-cart-1")
+            qs = Cart.objects.filter(id=self.cart_b1.id)
         self.assertEqual(qs.count(), 0)
 
     # ------------------------------------------------------------------

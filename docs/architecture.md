@@ -26,6 +26,7 @@ schema or database provisioning.
 | `apps/order` | Yes | `Order`, `OrderItem`, `CheckoutService` (full production flow), typed exceptions, DRF view + serializer, integration + API tests |
 | `apps/payment` | Yes | `Payment`, `PaymentMethod`; `PaymentGateway` ABC + registry + 3 dummy gateways; `PaymentService` (authorize/capture/void/refund); `authorize_payment` Celery task; full contract + service + registry tests — see [docs/payment-gateways.md](payment-gateways.md) |
 | `apps/core` | Yes | `IdempotencyRecord` model + migration, `redis_lock` (fenced Lua), `IdempotencyManager`, `CoreDomainError` subclasses |
+| `apps/invoice` | Yes | `InvoiceSequence`, `Invoice`; two-phase generation — atomic sequence + row creation inside `transaction.atomic`, PDF render outside; idempotent via `OneToOneField` + status-guarded `pdf_url` UPDATE; dispatched from `PaymentService` via `transaction.on_commit` |
 
 Redis is active for:
 - Distributed checkout lock: `lock:checkout:{tenant_id}:{cart_id}` — `SET NX PX` + fenced Lua `compare-token-then-DEL` release.
@@ -628,6 +629,181 @@ authorize_payment (Celery, queue=payments)
 ```
 
 No `if/else` on gateway slug anywhere in the service or task layer.
+
+---
+
+---
+
+## 10. Invoice System
+
+### 10.1 Design goals
+
+Three constraints shaped the invoice implementation:
+
+1. **DB transactions must be short.** Allocating a sequence number and writing a row takes microseconds. Rendering a PDF (file I/O) takes milliseconds. Mixing them holds a row lock 100× longer than necessary.
+2. **Generation must be idempotent.** A Celery re-delivery, a network timeout, or a worker crash must not duplicate invoice rows or corrupt the per-tenant sequence.
+3. **PDF failures must be recoverable.** If the PDF renderer fails or the worker crashes between phases, the system needs a clear signal ("this invoice needs a PDF") without losing the allocated number.
+
+### 10.2 Data model
+
+**`InvoiceSequence`** — one row per tenant, protected by `select_for_update`.
+
+| Field | Purpose |
+|---|---|
+| `tenant` | OneToOneField to `Tenant` |
+| `last_number` | Monotonically increasing counter; never decremented |
+
+**`Invoice`**
+
+| Field | Purpose |
+|---|---|
+| `id` | UUID primary key |
+| `order` | `OneToOneField` to `Order` — enforces structural uniqueness at the DB layer |
+| `number` | Per-tenant monotonic integer; `UniqueConstraint(tenant, number)` |
+| `total` / `taxes` / `currency` | Snapshot values at invoice creation time |
+| `pdf_url` | Empty string until Phase 2 completes; non-empty = PDF confirmed written |
+| `generated_at` | `auto_now_add` timestamp of the DB row commit |
+
+### 10.3 Two-phase generation flow
+
+```
+Celery worker: generate_invoice(order_id)
+│
+├── PHASE 1 — transaction.atomic()
+│   ├── SELECT order FOR UPDATE  (guard: status must be PAID)
+│   ├── SELECT InvoiceSequence FOR UPDATE  (exclusive per-tenant counter lock)
+│   ├── last_number += 1  →  save
+│   └── INSERT Invoice(number=N, pdf_url="")  ← committed; row visible immediately
+│       [IntegrityError on duplicate order → fetch existing row, proceed to Phase 2]
+│
+├── PHASE 2 — outside any transaction
+│   ├── render_invoice_pdf(...)  →  writes MEDIA_ROOT/invoices/<uuid>.pdf
+│   └── UPDATE Invoice SET pdf_url=<url> WHERE pk=<id> AND pdf_url=""
+│       [0 rows → another worker already set it; safe no-op]
+│
+└── return {"invoice_id": ..., "invoice_number": N, "pdf_url": ...}
+```
+
+**Idempotency table:**
+
+| Scenario | Phase 1 result | Phase 2 result |
+|---|---|---|
+| First call | INSERT succeeds, number N allocated | PDF rendered, `pdf_url` set |
+| Retry after Phase 1 crash | `IntegrityError` caught → fetch existing row (number N already allocated) | PDF rendered, `pdf_url` set |
+| Retry after Phase 2 crash | `IntegrityError` caught → fetch existing row, `pdf_url = ""` → re-render | PDF re-rendered, status-guarded UPDATE writes URL |
+| Retry after both phases succeed | `IntegrityError` caught → fetch existing row, `pdf_url` already set → return immediately | No render |
+
+### 10.4 Dispatch chain
+
+```
+PaymentService.authorize_payment(payment_id)
+    └─ FSM-guarded UPDATE → Payment.status = AUTHORIZED
+    └─ FSM-guarded UPDATE → Order.status = PAID
+    └─ transaction.on_commit → enqueue_generate_invoice(order_id)
+                                   │
+                                   ▼
+                           invoices queue (Celery)
+                               generate_invoice task
+                                   │
+                                   ▼
+                           InvoiceService.generate_invoice_for_order(order_id)
+```
+
+The `transaction.on_commit` hook ensures no invoice task is ever enqueued for an order that was never committed — a critical guarantee given the two-phase design.
+
+### 10.5 Failure handling
+
+| Failure point | Outcome | Recovery |
+|---|---|---|
+| Phase 1 DB failure | Transaction rolls back; no row, no sequence increment | Celery retries task; Phase 1 runs cleanly |
+| Phase 2 PDF render failure | Row with `pdf_url=""` persists; exception propagates | Celery retries via `max_retries=5` + exponential backoff; Phase 1 skipped (idempotency fast-path); Phase 2 re-renders |
+| Worker crash mid-Phase 2 | Same as render failure — `pdf_url` still `""` | Celery `acks_late=True` redelivers message; retry succeeds |
+| Concurrent duplicate delivery | Second worker hits `IntegrityError` in Phase 1 → fetches existing row | If `pdf_url` already set: returns immediately. If `pdf_url=""`: one worker wins the status-guarded UPDATE, other detects 0 rows and skips |
+
+---
+
+## 11. Reliability & Consistency Summary
+
+The following mechanisms combine to form the system's reliability posture. Each is independently testable and auditable.
+
+| Mechanism | Where applied | What it prevents |
+|---|---|---|
+| Redis distributed lock (`SET NX PX` + Lua fenced unlock) | Checkout critical section | Concurrent checkouts on the same cart from multiple API workers |
+| `Idempotency-Key` + `IdempotencyRecord` | Checkout endpoint | Client retries re-processing an already-committed checkout |
+| `select_for_update` | Cart, coupon, payment, order, invoice sequence | Lost-update race conditions on high-contention rows |
+| Conditional stock UPDATE (`WHERE stock >= qty`) | Checkout — stock deduction step | Negative stock from concurrent checkouts |
+| `transaction.on_commit` | All Celery task dispatches | Tasks enqueued for rolled-back transactions |
+| Status-guarded FSM UPDATEs | Payment, Order, Invoice | Duplicate Celery deliveries re-applying state transitions |
+| `OneToOneField` constraint | Invoice → Order | Duplicate invoice rows regardless of ORM-level idempotency |
+| `acks_late=True` + `max_retries` + `retry_backoff` | All async tasks | Lost tasks on worker crash; thundering retry herd |
+| DB `CHECK` constraints | Cart totals, coupon counts, stock | Schema-level last resort independent of ORM code paths |
+
+---
+
+## 12. Scaling Considerations
+
+### Today
+
+One Django process, one Postgres cluster, one Redis cluster. This is not a limitation — it is a deliberate choice (spec §7.5). Complexity is added when measured load demands it, not before.
+
+### Horizontal API scaling
+
+Adding Django workers is zero-configuration: all shared state lives in Postgres and Redis. The Redis lock namespace (`lock:checkout:{tenant_id}:{cart_id}`) distributes cleanly — no affinity required.
+
+### Read scaling
+
+All non-mutating queries (`cart reads`, `product browse`, `coupon lookup`) can route to a Postgres **read replica** via Django's `DATABASE_ROUTERS` without any ORM or service changes. The `TenantAwareManager` is routing-agnostic.
+
+### Write scaling and sharding
+
+Every table has `tenant_id` as the leftmost key in every composite index. Citus (Postgres sharding extension) can distribute by `tenant_id` column transparently. The only code change required is converting `all_tenants()` cross-tenant queries (already explicitly named and commented) to cross-shard scatter-gather.
+
+### Celery worker scaling
+
+The three-queue split (`payments`, `invoices`, `notifications`) allows independent worker pools:
+- **Payment workers** are I/O-bound on gateway latency → scale by adding workers.
+- **Invoice workers** are CPU-bound on PDF rendering → scale by adding workers or using a dedicated PDF microservice.
+- **Notification workers** are network-bound → cheapest to scale.
+
+### Event-driven evolution
+
+The `transaction.on_commit → Celery` dispatch pattern is already event-driven in spirit. Migrating to Kafka or SQS is a `tasks.py` replacement — no service or model changes required.
+
+---
+
+## 13. Trade-offs
+
+### Shared-schema multi-tenancy
+
+All tenants share one PostgreSQL schema. The `tenant_id` column is the isolation boundary enforced at three layers (middleware, ORM manager, schema indexes). This is operationally simple and sharding-ready, at the cost of a larger blast radius for primary DB outages.
+
+Mitigation: HA Postgres (primary + async replicas), PgBouncer in transaction-pool mode, read replica routing for non-critical paths.
+
+### Dummy payment gateways
+
+Production gateway integrations (Stripe, Moyasar, Tap) are intentionally absent. The `PaymentGateway` ABC is the stable interface; dummy gateways prove the contract and make tests deterministic. Adding a real gateway is three steps: implement the ABC, register the slug, add contract tests. No service or task code changes.
+
+The trade-off: provider-specific behaviors (3DS flows, webhook verification, partial capture quirks) are unproven until a real gateway ships.
+
+### Two-phase invoice vs. single-phase
+
+A single `transaction.atomic` that writes the row and renders the PDF would be simpler. It was rejected because:
+- PDF rendering holds a DB row lock for milliseconds, not microseconds, at the per-tenant sequence level.
+- A PDF render failure inside a transaction rolls back the already-allocated sequence number, creating gaps that violate the spec's gap-free guarantee.
+
+The two-phase design is more complex but correct: it allocates the number atomically, commits it, and renders outside the lock.
+
+### Intentionally avoided overengineering
+
+| Deferred pattern | Reason |
+|---|---|
+| Per-tenant Postgres schemas or databases | Operational cost without isolation benefit at current scale |
+| Event sourcing / CQRS | No requirement for full audit log or read-model projections |
+| gRPC or GraphQL | REST + DRF covers all current consumers |
+| `uuid7()` time-ordered keys | `uuid4()` works now; `uuid7()` is a one-line swap when benchmark shows index fragmentation |
+| Real-time WebSocket delivery | Polling or webhook callbacks cover all current payment/invoice status needs |
+
+The governing principle: every complexity decision traces to a measured need or a spec requirement. "We might need it" is not a sufficient justification.
 
 ---
 

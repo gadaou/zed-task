@@ -8,6 +8,8 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
+
 from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
@@ -75,15 +77,15 @@ class TenantAwareModelTimestampTests(TestCase):
     def test_created_at_auto_set_on_insert(self) -> None:
         before = timezone.now()
         with tenant_context(self.tenant):
-            cart = Cart.objects.create()
+            cart = Cart.objects.create(user_id=uuid.uuid4())
         self.assertGreaterEqual(cart.created_at, before)
         self.assertLessEqual(cart.created_at, timezone.now())
 
     def test_updated_at_changes_on_save(self) -> None:
         with tenant_context(self.tenant):
-            cart = Cart.objects.create()
+            cart = Cart.objects.create(user_id=uuid.uuid4())
         original_updated = cart.updated_at
-        cart.reference = "changed"
+        cart.currency = "EUR"
         cart.save()
         cart.refresh_from_db()
         self.assertGreaterEqual(cart.updated_at, original_updated)

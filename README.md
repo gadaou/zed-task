@@ -47,17 +47,19 @@ Endpoints are versioned under `/api/v1/` and follow resource-oriented convention
 
 ---
 
-## 4) Reliability Features
+## 4) Reliability & Consistency
 
 The reliability model combines database guarantees with distributed coordination:
 
 - **Tenant isolation** via middleware + tenant-aware ORM manager + tenant-led indexes
 - **Transactional boundaries** around critical mutations using `transaction.atomic()`
 - **Row-level serialization** with `select_for_update` on sensitive state transitions
-- **Redis distributed locks** for cross-process checkout serialization (`SET NX PX` + fenced unlock)
-- **Idempotency** for checkout using `Idempotency-Key` and durable replay records
-- **Conditional stock deduction** (`UPDATE ... WHERE stock >= qty`) to prevent negative stock races
-- **`transaction.on_commit` discipline** so async tasks are only dispatched after successful commit
+- **Redis distributed locks** for cross-process checkout serialization (`SET NX PX` + fenced Lua unlock)
+- **Idempotency** for checkout using `Idempotency-Key` and durable `IdempotencyRecord` replay
+- **Conditional stock deduction** (`UPDATE ... WHERE stock >= qty`) to prevent negative-stock races
+- **`transaction.on_commit` discipline** — Celery tasks are only enqueued after a successful `COMMIT`; a rolled-back checkout never orphans a payment or invoice task
+- **Retryable async tasks** — payment and invoice workers are designed with `max_retries`, `retry_backoff`, `retry_jitter`, and `acks_late`; each task is idempotent so Celery re-deliveries are safe no-ops
+- **Status-guarded UPDATEs** — FSM transitions on `Payment.status`, `Order.status`, and `Invoice.pdf_url` are written as `UPDATE … WHERE status = <expected>`, turning zero rows affected into a safe idempotency signal rather than a hidden bug
 
 ---
 
@@ -99,19 +101,60 @@ This preserves correctness under concurrency and evolving cart state.
 
 ---
 
-## 7) Bonus Features
+## 7) Invoice System
 
-Planned and/or partially implemented bonus scope includes:
+Invoices are generated asynchronously after a payment is confirmed, using a two-phase approach designed to keep database transactions short and avoid mixing file I/O with database locks.
 
-- **Invoice handling**: async invoice creation and delivery pipeline
-- **Advanced coupon constraints**: subtotal, location, segment, usage, validity windows, allow/deny lists
-- **B2B support**: approvals, payment terms, B2B checkout states (where implemented)
+### Phase 1 — Transactional DB work (inside `transaction.atomic`)
 
-Authoritative roadmap and constraints: [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
+1. Lock the `InvoiceSequence` row for the tenant with `select_for_update`.
+2. Atomically increment the per-tenant monotonic invoice number (`last_number + 1`).
+3. `INSERT` an `Invoice` row with `pdf_url = ""` (committed immediately; the row exists before any I/O begins).
+
+### Phase 2 — PDF rendering (outside the transaction)
+
+4. Call `render_invoice_pdf(...)` using ReportLab to write the PDF to `MEDIA_ROOT/invoices/<id>.pdf`.
+5. Apply a **status-guarded UPDATE**: `UPDATE invoice SET pdf_url = <url> WHERE pk = <id> AND pdf_url = ""`; zero rows affected means another worker already set the URL — safe no-op.
+
+**Why two phases?**
+
+| Concern | Resolution |
+|---|---|
+| Long DB locks | PDF I/O is never inside the transaction; lock hold time is microseconds |
+| File I/O inside transactions | Failure at step 4 never leaves an open transaction or partial DB state |
+| Retryable PDF generation | Phase 1 is idempotent via `OneToOneField` constraint; phase 2 is idempotent via the status-guarded UPDATE |
+| Crash recovery | A row with `pdf_url = ""` is the durable signal for a pending retry; the worker re-renders without re-allocating a sequence number |
+
+The `generate_invoice` Celery task runs on the `invoices` queue and is dispatched via `transaction.on_commit` after `Order.status` transitions to `PAID`.
+
+Authoritative roadmap: [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
 
 ---
 
-## 8) API Documentation
+## 8) Scaling Considerations
+
+The architecture is designed to scale horizontally without requiring a distributed rewrite.
+
+**Today (single-process baseline):**
+- One Django process handles all API traffic; Gunicorn workers add concurrency without coordination overhead.
+- Redis acts as the shared coordination layer for distributed locks and idempotency — adding API servers requires no changes here, the lock key namespace (`lock:checkout:{tenant_id}:{cart_id}`) already distributes cleanly.
+- PostgreSQL is the single source of truth; composite indexes lead with `tenant_id` so tenant-scoped queries hit narrow B-tree ranges.
+
+**Near-term (read scaling):**
+- Non-mutating paths (product browse, cart reads, coupon lookup) can route to a Postgres read replica with a one-line Django `DATABASES` routing change — no ORM or service changes required.
+- Redis client-side caching can front hot catalog reads (product price, stock availability) for tenants with high read-to-write ratios.
+
+**Longer-term (write scaling + multi-region):**
+- Every table carries `tenant_id` and every query filters by it. Citus (Postgres extension) can shard by `tenant_id` column with no application-layer changes — the `all_tenants()` manager escape hatch is already the only cross-tenant query path.
+- The Celery queue split (`payments`, `invoices`, `notifications`) allows scaling workers independently — payment workers are I/O-bound on gateway latency; invoice workers are CPU-bound on PDF rendering.
+- The event-driven skeleton is already in place (`transaction.on_commit` → Celery); migrating to an event broker (Kafka, SQS) is a task-dispatch replacement, not an architectural change.
+
+**Explicit non-goals (for now):**
+Multi-region active-active, per-tenant databases, and event sourcing are deferred per spec §7.5: "No premature distribution."
+
+---
+
+## 9) API Documentation
 
 - Swagger UI: `http://localhost:8000/api/docs/`
 - OpenAPI schema: `http://localhost:8000/api/schema/`
@@ -135,9 +178,137 @@ Reminder:
 
 ---
 
-## 9) How to Run
+## 10) Demo Seed & Quick Checkout
 
-### Local (current, canonical)
+The fastest way to see the full checkout flow in action.
+
+### Seed demo data
+
+```bash
+python manage.py seed_demo_data
+```
+
+This creates (idempotently — safe to run multiple times):
+
+| Object | Value |
+|---|---|
+| Tenant | `demo.localhost` |
+| Products | Wireless Headphones ($79.99), Mechanical Keyboard ($129.99), USB-C Hub ($34.99) |
+| Coupons | `DEMO10` (10% off), `SAVE5` ($5 fixed) |
+| Customer UUID | `00000000-0000-0000-0000-000000000001` |
+| Address | San Francisco, US — set as default |
+| Payment method | `dummy_success` gateway |
+| Cart | Pre-loaded with 2 items, ready for checkout |
+
+The command prints a ready-to-paste `curl` checkout command at the end. No manual ID hunting required.
+
+### Skip cart creation
+
+```bash
+python manage.py seed_demo_data --no-cart
+```
+
+All objects except the cart are seeded. Useful if you want to build the cart via the API yourself.
+
+### Test checkout in under 2 minutes
+
+After seeding, the command output includes a complete curl snippet. Copy and run it:
+
+```bash
+# 1. Seed (first time or repeat — safe either way)
+python manage.py seed_demo_data
+
+# 2. Copy the curl command printed at the end, which looks like:
+curl -s -X POST http://localhost:8000/api/v1/carts/<cart-id>/checkout/ \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Domain: demo.localhost" \
+  -H "Idempotency-Key: $(python3 -c 'import uuid; print(uuid.uuid4())')" \
+  -d '{
+    "payment_method_id": "<payment-method-id>",
+    "address_id": "<address-id>"
+  }' | python3 -m json.tool
+
+# 3. Optional: apply the DEMO10 coupon before checkout
+curl -s -X POST http://localhost:8000/api/v1/carts/<cart-id>/coupons/ \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Domain: demo.localhost" \
+  -d '{"coupon_code": "DEMO10"}' | python3 -m json.tool
+```
+
+Expected response: `202 Accepted` with `payment_status: "pending"` (the `dummy_success` gateway authorises synchronously in test/dev settings).
+
+---
+
+## 11) Makefile Commands (Docker)
+
+All commands run against the Docker Compose stack. Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine with the Compose v2 plugin.
+
+### Stack lifecycle
+
+| Command | Description |
+|---|---|
+| `make up` | Build images and start all services (web, worker, db, redis) |
+| `make down` | Stop all services |
+| `make restart` | `down` then `up` |
+| `make logs` | Tail logs for all services |
+| `make logs s=web` | Tail logs for a specific service (`web`, `worker`, `db`, `redis`) |
+| `make build` | Rebuild images without starting |
+| `make reset` | **Destroy everything** (volumes included), rebuild from scratch, start clean |
+
+### Database
+
+| Command | Description |
+|---|---|
+| `make migrate` | Apply all pending migrations |
+| `make makemigrations` | Generate new migration files across all apps |
+| `make makemigrations app=invoice` | Generate migrations for a specific app |
+
+### Demo data
+
+| Command | Description |
+|---|---|
+| `make seed` | Idempotent seed — tenant, products, coupons, address, payment method, cart |
+| `make seed args=--no-cart` | Seed everything except the demo cart |
+
+### Quality
+
+| Command | Description |
+|---|---|
+| `make test` | Run the full pytest suite inside the container |
+| `make test args='-k checkout'` | Run a subset of tests matching a keyword |
+| `make lint` | Run `ruff` linter (reports only, no auto-fix) |
+
+### Developer tools
+
+| Command | Description |
+|---|---|
+| `make shell` | Open a Django shell (`python manage.py shell`) |
+| `make shell-db` | Open `psql` inside the `db` container |
+| `make swagger` | Open Swagger UI in the default browser |
+
+### Zero-to-checkout in four commands
+
+```bash
+make up          # start the full stack (runs migrations automatically)
+make seed        # create demo tenant, products, coupons, and a ready cart
+# copy the curl command printed by seed and run it
+make logs        # watch the Celery worker process the payment + invoice tasks
+```
+
+---
+
+## 12) How to Run
+
+### Docker Compose (recommended)
+
+```bash
+cp .env.example .env   # adjust DATABASE_URL / REDIS_URL if needed
+make up                # builds images, starts all services, runs migrations
+make seed              # load demo data
+# API is live at http://localhost:8000
+```
+
+### Local (without Docker)
 
 ```bash
 # 1) Setup
@@ -156,47 +327,41 @@ python manage.py migrate
 # 4) Run API
 python manage.py runserver
 
-# 5) Run tests
+# 5) Seed demo data
+python manage.py seed_demo_data
+
+# 6) Run tests
 DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 ```
 
-### Docker Compose (when compose file is present)
+---
 
-> The current repository snapshot does not include `docker-compose.yml`. If/when compose is added, standard workflow is:
+## 13) Trade-offs
 
-```bash
-docker compose up -d --build
-docker compose exec web python manage.py migrate
-docker compose exec web pytest -q
-```
+Key architectural trade-offs are intentional and documented here for reviewers.
+
+| Decision | Pros | Accepted cost |
+|---|---|---|
+| **Shared schema multi-tenancy (`tenant_id` column)** | Operational simplicity; one migration run; zero onboarding cost per tenant; sharding-ready by design | Larger blast radius if the primary DB degrades; row-level security (RLS) deferred |
+| **Async payment processing (Celery)** | Resilient checkout UX; retryable gateway interactions; checkout never blocks on gateway latency | Eventual consistency on final payment state; requires idempotency discipline in every task |
+| **Two-phase invoice generation** | Short DB lock hold time; PDF I/O never inside a transaction; clean retry semantics | Two database writes per invoice instead of one; `pdf_url = ""` sentinel must be monitored |
+| **Redis + PostgreSQL hybrid idempotency** | Fast in-progress guard in Redis; durable replay guarantee in Postgres | Dual-store operational complexity; Redis TTL expiry must outlive the longest possible checkout |
+| **Dummy payment gateways instead of real integrations** | Deterministic tests; clean `PaymentGateway` interface proven before real provider coupling | Provider-specific error codes, 3DS flows, and webhook verification deferred |
+| **Rule registry for coupon constraints** | Open for extension; zero service-code changes per new constraint type; unknown keys fail closed | Constraints opaque to SQL — cannot `WHERE` on JSON fields efficiently without Postgres JSON path operators |
+| **No premature distribution** | Dramatically lower operational surface; one process, one DB, one Redis is debuggable by one engineer | Vertical scaling ceiling; migration to multi-region or sharded topology is a future investment |
 
 ---
 
-## 10) Trade-offs
-
-Key architectural trade-offs are intentional:
-
-- **Shared DB + `tenant_id`**
-  - Pros: operational simplicity, cheap tenant onboarding, unified migrations
-  - Trade-off: larger blast radius if primary DB degrades
-- **Async payment processing**
-  - Pros: resilient checkout UX, retryable gateway interactions
-  - Trade-off: eventual consistency on final payment state
-- **Redis + PostgreSQL hybrid idempotency**
-  - Pros: fast in-progress guard + durable replay guarantee
-  - Trade-off: dual-store operational complexity
-- **No real external gateway integration yet**
-  - Pros: deterministic tests, clean boundary-first architecture
-  - Trade-off: provider-specific behavior deferred to later iterations
-
----
-
-## Repository Layout
+## 14) Repository Layout
 
 ```text
 .
 ├── PROJECT_SPEC.md
 ├── README.md
+├── Makefile               ← make up / test / seed / reset / …
+├── Dockerfile             ← dev + prod multi-stage build
+├── docker-compose.yml     ← web, worker, db, redis
+├── .env.example
 ├── manage.py
 ├── requirements.txt
 ├── cart_system/
@@ -204,14 +369,15 @@ Key architectural trade-offs are intentional:
 │   ├── urls.py
 │   └── celery.py
 ├── apps/
-│   ├── core/
-│   ├── tenant/
-│   ├── catalog/
-│   ├── cart/
-│   ├── coupon/
-│   ├── addresses/
-│   ├── payment/
-│   └── order/
+│   ├── core/          # health, idempotency, Redis lock, seed command
+│   ├── tenant/        # Tenant model, middleware, TenantAwareManager
+│   ├── catalog/       # Product — price, stock, currency
+│   ├── cart/          # Cart, CartItem, add/remove/recalculate
+│   ├── coupon/        # Coupon, CartCoupon, rule registry, stacking
+│   ├── addresses/     # Address — soft-delete, one default per user
+│   ├── payment/       # Payment, PaymentMethod, gateway registry
+│   ├── order/         # Order, OrderItem, CheckoutService
+│   └── invoice/       # Invoice, InvoiceSequence, two-phase PDF generation
 └── docs/
     ├── architecture.md
     ├── payment-gateways.md

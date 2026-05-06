@@ -1,0 +1,112 @@
+# --------------------------------------------------------------------------- #
+#  cart_system — docker-compose.yml                                            #
+#                                                                              #
+#  Services:                                                                   #
+#    db      — PostgreSQL 16 (system of record)                               #
+#    redis   — Redis 7 (locks, idempotency sentinels, Celery broker/backend)  #
+#    web     — Django dev server (mounts source, hot-reload)                  #
+#    worker  — Celery worker (payments, invoices, notifications queues)        #
+#                                                                              #
+#  Usage:                                                                      #
+#    make up           start all services                                      #
+#    make down         stop all services                                       #
+#    make reset        stop + wipe volumes + rebuild                           #
+# --------------------------------------------------------------------------- #
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — single shared database for all tenants
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cart_system
+      POSTGRES_USER: cart_user
+      POSTGRES_PASSWORD: cart_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cart_user -d cart_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Redis — distributed locks, idempotency, Celery broker/backend
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Django web / API server
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://cart_user:cart_pass@db:5432/cart_system
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      DJANGO_SETTINGS_MODULE: cart_system.settings.dev
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  # ---------------------------------------------------------------------------
+  # Celery worker — processes payments, invoices, notifications queues
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://cart_user:cart_pass@db:5432/cart_system
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      DJANGO_SETTINGS_MODULE: cart_system.settings.dev
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A cart_system worker
+        --loglevel=info
+        --queues=payments,invoices,notifications
+        --concurrency=2
+
+volumes:
+  postgres_data:
