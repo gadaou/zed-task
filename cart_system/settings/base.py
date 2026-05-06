@@ -37,6 +37,12 @@ env = environ.Env(
     DJANGO_ALLOWED_HOSTS=(list, []),
     DJANGO_SECURE_SSL_REDIRECT=(bool, False),
     DJANGO_TIME_ZONE=(str, "UTC"),
+    REDIS_URL=(str, "redis://localhost:6379/0"),
+    CELERY_BROKER_URL=(str, "redis://localhost:6379/1"),
+    CELERY_RESULT_BACKEND=(str, "redis://localhost:6379/2"),
+    CHECKOUT_LOCK_TTL_MS=(int, 15000),
+    IDEMPOTENCY_INPROGRESS_TTL_S=(int, 60),
+    IDEMPOTENCY_RECORD_TTL_HOURS=(int, 24),
 )
 
 # Load ``.env`` if present. In production the env vars are injected by the
@@ -226,13 +232,222 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 
 SPECTACULAR_SETTINGS = {
+    # ---------------------------------------------------------------------------
+    # API identity
+    # ---------------------------------------------------------------------------
     "TITLE": "cart_system API",
-    "DESCRIPTION": "Multi-tenant cart and checkout API. See PROJECT_SPEC.md.",
     "VERSION": "1.0.0",
+    "DESCRIPTION": (
+        "## Multi-tenant shopping cart and checkout API\n\n"
+        "cart_system serves thousands of merchant tenants on a single Django/Postgres "
+        "cluster. Every request is scoped to a single tenant via the "
+        "`X-Tenant-Domain` header — supply it on **every** call.\n\n"
+        "### Idempotency\n\n"
+        "Mutating endpoints (checkout, …) require an `Idempotency-Key: <uuid>` header. "
+        "Repeating the exact same request (same key **and** same body) is safe — the "
+        "server stores the first response in Postgres and returns it verbatim without "
+        "re-executing side-effects. Using the same key with a *different* body returns "
+        "`409 idempotency/conflict`.\n\n"
+        "### Error format\n\n"
+        "All error responses follow [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) "
+        "`application/problem+json`:\n\n"
+        "```json\n"
+        '{"type": "https://cart-system.local/problems/cart/empty",\n'
+        ' "title": "Cart is empty",\n'
+        ' "status": 422,\n'
+        ' "detail": "cart abc… has no items"}\n'
+        "```\n\n"
+        "### Concurrency guarantees\n\n"
+        "- **Checkout serialisation**: a Redis distributed lock "
+        "(`lock:checkout:{tenant}:{cart}`) ensures at most one checkout executes "
+        "for a given cart at a time. Concurrent attempts receive `409 cart/locked`.\n"
+        "- **Stock safety**: stock deduction uses `UPDATE … WHERE stock >= qty` — "
+        "zero rows means out-of-stock, never negative stock.\n"
+        "- **No double orders**: the `IdempotencyRecord` unique constraint on "
+        "`(tenant_id, idempotency_key)` is written *inside* the checkout DB "
+        "transaction, making duplicate orders structurally impossible.\n\n"
+        "### Payment lifecycle\n\n"
+        "`POST /carts/{cart_id}/checkout` → `202 Accepted` (payment pending) → "
+        "async Celery task → gateway → `AUTHORIZED` or `FAILED`."
+    ),
+    "CONTACT": {
+        "name": "Platform Team",
+        "email": "platform@cart-system.local",
+    },
+    "LICENSE": {
+        "name": "Proprietary",
+    },
+    "EXTERNAL_DOCS": {
+        "description": "Full architecture and project spec",
+        "url": "https://github.com/cart-system/docs/blob/main/PROJECT_SPEC.md",
+    },
+    # ---------------------------------------------------------------------------
+    # Schema generation
+    # ---------------------------------------------------------------------------
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]+",
     "COMPONENT_SPLIT_REQUEST": True,
+
+    # Enumerate all tags so they appear in sidebar order (not alphabetical).
+    # Each tag gets a description that surfaces in the SwaggerUI sidebar.
+    "TAGS": [
+        {
+            "name": "Checkout",
+            "description": (
+                "Checkout a shopping cart. Accepts payment method, shipping address, "
+                "and an idempotency key. Runs under a Redis distributed lock + Postgres "
+                "row lock to guarantee exactly-once order creation. Returns `202 Accepted` "
+                "immediately; the actual payment authorisation happens asynchronously via "
+                "the Celery `payments` queue."
+            ),
+        },
+        {
+            "name": "Cart",
+            "description": (
+                "Manage the shopping cart — add items, remove items, apply/remove coupons, "
+                "and inspect the current totals. Every cart is scoped to a single tenant "
+                "and customer (`user_id`). Cart state transitions: `ACTIVE → CHECKED_OUT`."
+            ),
+        },
+        {
+            "name": "Coupon",
+            "description": (
+                "Manage discount coupons for a tenant. Coupons are either **percentage** "
+                "or **fixed-amount**. Constraints (minimum cart value, country allowlist, "
+                "usage limits, validity window) are evaluated at apply-time and re-validated "
+                "at checkout."
+            ),
+        },
+        {
+            "name": "Payment",
+            "description": (
+                "Inspect and manage payment records and stored payment methods. "
+                "Payment status follows the FSM: `REQUIRES_CONFIRMATION → AUTHORIZED → "
+                "CAPTURED → SUCCEEDED` (or `FAILED / CANCELLED / REFUNDED`)."
+            ),
+        },
+        {
+            "name": "Catalog",
+            "description": "Product catalog — prices, stock levels, and metadata.",
+        },
+        {
+            "name": "Addresses",
+            "description": (
+                "Manage customer shipping addresses. Soft-deleted addresses are retained "
+                "for order-history integrity. At most one address may be the default per "
+                "customer within a tenant."
+            ),
+        },
+        {
+            "name": "Tenant",
+            "description": "Tenant provisioning and management (ops/admin use only).",
+        },
+    ],
+
+    # ---------------------------------------------------------------------------
+    # Security schemes
+    # ---------------------------------------------------------------------------
+    # X-Tenant-Domain is a custom header required on every non-exempt endpoint.
+    # It is not a standard OAuth2/Bearer scheme, so we model it as an apiKey.
+    # APPEND_COMPONENTS injects the definition into the generated schema's
+    # ``components.securitySchemes`` block.
+    "SECURITY": [{"TenantDomain": []}],
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "TenantDomain": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-Tenant-Domain",
+                "description": (
+                    "The tenant's unique domain (e.g. `acme.mysaas.com`). "
+                    "Required on every non-exempt endpoint. "
+                    "Missing → `400 tenant/missing-header`. "
+                    "Unknown domain → `404 tenant/not-found`. "
+                    "Inactive tenant → `403 tenant/disabled`."
+                ),
+            },
+        }
+    },
+
+    # ---------------------------------------------------------------------------
+    # SwaggerUI / Redoc configuration
+    # ---------------------------------------------------------------------------
+    "SWAGGER_UI_SETTINGS": {
+        "deepLinking": True,
+        "persistAuthorization": True,
+        "displayRequestDuration": True,
+        "filter": True,
+        "defaultModelsExpandDepth": 2,
+        "defaultModelExpandDepth": 2,
+        "docExpansion": "list",
+        "syntaxHighlight.theme": "obsidian",
+        "tryItOutEnabled": True,
+    },
+    "REDOC_UI_SETTINGS": {
+        "hideDownloadButton": False,
+        "expandResponses": "200,202",
+        "pathInMiddlePanel": True,
+        "theme": {
+            "colors": {"primary": {"main": "#2C6FED"}},
+            "typography": {"fontSize": "15px"},
+        },
+    },
+
+    # ---------------------------------------------------------------------------
+    # Schema quality
+    # ---------------------------------------------------------------------------
+    # Postprocess hooks for consistency across all generated schemas.
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+    ],
+    "ENUM_GENERATE_CHOICE_DESCRIPTION": True,
+    "ENUM_ADD_EXPLICIT_BLANK_NULL_CHOICE": False,
+    "SORT_OPERATIONS": False,  # preserve the natural URL order defined in urls.py
+
+    # Show full request/response examples in the UI.
+    "SERVE_AUTHENTICATION": [],
 }
+
+# ---------------------------------------------------------------------------
+# Redis — coordination layer (locks, rate limits, idempotency, Celery broker)
+# PROJECT_SPEC §4.4 (distributed locking) and §4.6 (async workers).
+# ---------------------------------------------------------------------------
+
+REDIS_URL: str = env("REDIS_URL")
+
+# ---------------------------------------------------------------------------
+# Celery — async workers for payments, invoices, notifications
+# PROJECT_SPEC §4.6. Three named queues so slow gateways cannot block invoice
+# generation. Configuration uses the "CELERY_" namespace prefix so every
+# CELERY_* env var in django.conf.settings is picked up by app.conf.
+# ---------------------------------------------------------------------------
+
+CELERY_BROKER_URL: str = env("CELERY_BROKER_URL")
+CELERY_RESULT_BACKEND: str = env("CELERY_RESULT_BACKEND")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "UTC"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# ---------------------------------------------------------------------------
+# Checkout / Idempotency constants  (PROJECT_SPEC §4.4, §4.5)
+# ---------------------------------------------------------------------------
+
+# Redis lock TTL for the checkout critical section (milliseconds).
+# Sized to: gateway timeout (8s) + DB budget (2s) + safety margin (5s) = 15s.
+CHECKOUT_LOCK_TTL_MS: int = env("CHECKOUT_LOCK_TTL_MS")
+
+# How long the Redis "in_progress" idempotency sentinel lives (seconds).
+# A retry within this window gets 409 idempotency/in-progress rather than
+# starting a second checkout.
+IDEMPOTENCY_INPROGRESS_TTL_S: int = env("IDEMPOTENCY_INPROGRESS_TTL_S")
+
+# How long durable IdempotencyRecord DB rows are kept before the sweep job
+# deletes them (hours).  PROJECT_SPEC §4.5 mandates 24h.
+IDEMPOTENCY_RECORD_TTL_HOURS: int = env("IDEMPOTENCY_RECORD_TTL_HOURS")
 
 # ---------------------------------------------------------------------------
 # Logging — structured JSON logs with bound context (PROJECT_SPEC §6.3)

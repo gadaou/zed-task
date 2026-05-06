@@ -80,7 +80,10 @@ class PaymentMethod(TenantAwareModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     # ADR-NOTE: gateway_slug is kept as the only field because it will remain
     # in the final model as the discriminator.  Other fields come later.
-    gateway_slug = models.CharField(max_length=50, default="mock")
+    # Default changed from "mock" to "dummy_success" (migration 0004) — "mock"
+    # remains registered as an alias in the gateway registry for backwards
+    # compatibility with any existing rows.
+    gateway_slug = models.CharField(max_length=50, default="dummy_success")
 
     class Meta:
         verbose_name = "Payment Method"
@@ -152,6 +155,24 @@ class Payment(TenantAwareModel):
     # Short human-readable reason populated by the gateway on FAILED.
     # Intentionally 255 chars — structured detail lives in the gateway event log.
     failure_reason = models.CharField(max_length=255, blank=True, default="")
+
+    # Gateway-side reference IDs — populated on successful FSM transitions.
+    # Blank defaults allow backwards-compatible addition (migration 0003).
+    # ADR-NOTE — reserved future columns (now promoted):
+    #   These were noted in the module docstring ADR; they land here as part of
+    #   the pluggable gateway iteration (PROJECT_SPEC §3.3).
+    gateway_authorization_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Gateway-side authorization reference; populated on AUTHORIZED.",
+    )
+    gateway_capture_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Gateway-side capture reference; populated on CAPTURED.",
+    )
 
     class Meta:
         verbose_name = "Payment"

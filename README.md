@@ -178,6 +178,7 @@ gunicorn cart_system.wsgi:application --workers 4 --bind 0.0.0.0:8000
 * Pagination: cursor-based.
 * Auth: bearer JWT (added in a later iteration). Tenancy is *orthogonal* to authentication — both must succeed.
 * Idempotency: `POST /api/v1/carts/{id}/checkout` requires an `Idempotency-Key` header.
+* Payment gateways: pluggable behind the `PaymentGateway` ABC and a slug-keyed registry — see [`docs/payment-gateways.md`](docs/payment-gateways.md).
 
 See [`PROJECT_SPEC.md` §5.4](PROJECT_SPEC.md) for the full API design contract.
 

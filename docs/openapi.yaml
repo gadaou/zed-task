@@ -1,0 +1,366 @@
+openapi: 3.0.3
+info:
+  title: cart_system API
+  version: 1.0.0
+  description: |-
+    ## Multi-tenant shopping cart and checkout API
+
+    cart_system serves thousands of merchant tenants on a single Django/Postgres cluster. Every request is scoped to a single tenant via the `X-Tenant-Domain` header — supply it on **every** call.
+
+    ### Idempotency
+
+    Mutating endpoints (checkout, …) require an `Idempotency-Key: <uuid>` header. Repeating the exact same request (same key **and** same body) is safe — the server stores the first response in Postgres and returns it verbatim without re-executing side-effects. Using the same key with a *different* body returns `409 idempotency/conflict`.
+
+    ### Error format
+
+    All error responses follow [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) `application/problem+json`:
+
+    ```json
+    {"type": "https://cart-system.local/problems/cart/empty",
+     "title": "Cart is empty",
+     "status": 422,
+     "detail": "cart abc… has no items"}
+    ```
+
+    ### Concurrency guarantees
+
+    - **Checkout serialisation**: a Redis distributed lock (`lock:checkout:{tenant}:{cart}`) ensures at most one checkout executes for a given cart at a time. Concurrent attempts receive `409 cart/locked`.
+    - **Stock safety**: stock deduction uses `UPDATE … WHERE stock >= qty` — zero rows means out-of-stock, never negative stock.
+    - **No double orders**: the `IdempotencyRecord` unique constraint on `(tenant_id, idempotency_key)` is written *inside* the checkout DB transaction, making duplicate orders structurally impossible.
+
+    ### Payment lifecycle
+
+    `POST /carts/{cart_id}/checkout` → `202 Accepted` (payment pending) → async Celery task → gateway → `AUTHORIZED` or `FAILED`.
+  contact:
+    name: Platform Team
+    email: platform@cart-system.local
+  license:
+    name: Proprietary
+paths:
+  /api/v1/carts/{cart_id}/checkout/:
+    post:
+      operationId: checkout_cart
+      description: |-
+        Initiates the checkout flow for an active cart under a **distributed Redis lock** and a **Postgres row lock**, guaranteeing exactly-one order creation per cart.
+
+        ### Flow
+
+        1. Idempotency check — returns the stored response if the key has    been seen before (without re-executing).
+        2. Acquire Redis lock `lock:checkout:{tenant}:{cart}` (TTL 15s).
+        3. Open Postgres transaction.
+        4. `SELECT FOR UPDATE` on cart, address, and payment method.
+        5. Revalidate all applied coupons.
+        6. Deduct stock: `UPDATE product SET stock=stock-qty WHERE stock>=qty`    (conditional, race-safe).
+        7. Create `Order` + `OrderItem` rows.
+        8. Mark cart `CHECKED_OUT` with optimistic version guard.
+        9. Create `Payment` in `REQUIRES_CONFIRMATION`.
+        10. Persist `IdempotencyRecord` (inside the transaction —     rolls back on failure).
+        11. COMMIT → `transaction.on_commit` dispatches the Celery     `authorize_payment` task.
+        12. Release lock.
+
+        ### Concurrency guarantees
+
+        - **No double orders**: Redis lock + DB row lock + unique `(tenant,   idempotency_key)` constraint make duplicate orders structurally   impossible.
+        - **No oversell**: conditional stock UPDATE returns 0 rows on a race;   a `CHECK stock >= 0` DB constraint is the last resort.
+        - **No orphan payment tasks**: Celery dispatch is wrapped in   `transaction.on_commit` — a rollback produces no task.
+        - **Idempotent**: same `Idempotency-Key` + same body = safe retry.
+
+        ### Payment outcome
+
+        The endpoint returns `202 Accepted` immediately. The actual gateway authorisation runs asynchronously on the Celery `payments` queue. Poll `GET /payments/{payment_id}` or listen for the webhook to determine the final outcome.
+
+        > **ADR-NOTE** The payment gateway is a **mock stub** in this > iteration. Real gateway integrations (Stripe, HyperPay, Tabby) > land in a subsequent iteration.
+      summary: Checkout a cart
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: |-
+          A client-generated UUID (v1–v5) that uniquely identifies this request attempt. The server stores the first response for 24 hours and returns it verbatim on replay without re-executing side-effects.
+
+          **Replay rules:**
+          - Same key **+** same body → `202` (or whatever the original status was).
+          - Same key **+** different body → `409 idempotency/conflict`.
+          - Same key while the original request is still processing → `409 idempotency/in-progress` (retry after a short back-off).
+
+          Generate a fresh UUID per logical request attempt, not per HTTP retry.
+        required: true
+        examples:
+          FreshCheckoutAttempt:
+            value: 550e8400-e29b-41d4-a716-446655440000
+            summary: New UUID for first attempt
+      - in: header
+        name: X-Tenant-Domain
+        schema:
+          type: string
+        description: The tenant's unique domain as registered in the platform (e.g.
+          `acme.mysaas.com`). Every non-exempt endpoint requires this header. Missing
+          → `400 tenant/missing-header`. Unknown domain → `404 tenant/not-found`.
+          Inactive tenant → `403 tenant/disabled`.
+        required: true
+        examples:
+          AcmeStore:
+            value: acme.mysaas.com
+            summary: A live tenant domain
+          DevSandbox:
+            value: dev.localhost
+            summary: Local development
+      - in: path
+        name: cart_id
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the `Cart` to check out. Must be `ACTIVE` and owned by
+          the authenticated customer within the current tenant.
+        required: true
+      tags:
+      - Checkout
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequestRequest'
+            examples:
+              StandardCheckout:
+                value:
+                  payment_method_id: 11111111-0000-0000-0000-000000000001
+                  address_id: 22222222-0000-0000-0000-000000000002
+                summary: First-time checkout with a Stripe card
+                description: 'The most common case: a cart with items, a stored card,
+                  and a shipping address.  Use a fresh UUID for `Idempotency-Key`.'
+              IdempotentReplay:
+                value:
+                  payment_method_id: 11111111-0000-0000-0000-000000000001
+                  address_id: 22222222-0000-0000-0000-000000000002
+                summary: Retrying a timed-out request
+                description: Use the **same** `Idempotency-Key` and the **same** body
+                  as the original timed-out call. The server returns the stored `202`
+                  without creating a second order.
+        required: true
+      security:
+      - cookieAuth: []
+      - TenantDomain: []
+      - {}
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+              examples:
+                202—CheckoutAccepted:
+                  value:
+                    order_id: aaaaaaaa-0000-0000-0000-000000000001
+                    payment_id: bbbbbbbb-0000-0000-0000-000000000002
+                    payment_status: pending
+                    total: '149.99'
+                    currency: USD
+                  summary: Payment pending async authorisation
+                  description: Checkout committed to the database. The Celery `payments`
+                    worker is authorising the charge asynchronously. Poll the payment
+                    endpoint or wait for the webhook to confirm `AUTHORIZED`.
+                202—IdempotentReplay:
+                  value:
+                    order_id: aaaaaaaa-0000-0000-0000-000000000001
+                    payment_id: bbbbbbbb-0000-0000-0000-000000000002
+                    payment_status: pending
+                    total: '149.99'
+                    currency: USD
+                  summary: Same response returned for a duplicate request
+                  description: The server found a matching `IdempotencyRecord` (same
+                    key + same body) and returned the stored `202` without touching
+                    the database or dispatching a second payment task.
+          description: '**Checkout accepted.** Order and payment records created.
+            Payment authorisation is pending on the async Celery worker. Also returned
+            on idempotent replay — body is identical to the original response.'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+          description: |-
+            Returned when:
+            - `Idempotency-Key` header is absent.
+            - `Idempotency-Key` value is not a valid UUID.
+            - Request body is missing required fields or contains invalid values.
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+          description: Returned when the `cart_id`, `address_id`, or `payment_method_id`
+            does not exist within the current tenant.
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+          description: |
+            Returned in four scenarios:
+
+            | `type` | Cause | Client action |
+            |--------|-------|---------------|
+            | `cart/locked` | Redis lock already held by another process | Retry after ~1s back-off |
+            | `cart/locked` | Cart already checked out | Do not retry — create a new cart |
+            | `cart/stale-version` | Concurrent cart mutation | Re-read the cart and retry |
+            | `idempotency/conflict` | Same key, different request body | Do not retry — use a new key |
+            | `idempotency/in-progress` | Duplicate in-flight request | Retry after short back-off |
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+          description: |
+            Returned when a domain invariant is violated:
+
+            | `type` | Cause |
+            |--------|-------|
+            | `cart/empty` | Cart has no items |
+            | `product/out-of-stock` | Insufficient stock for one or more items |
+            | `coupon/expired` | An applied coupon expired before checkout |
+            | `coupon/usage-limit-reached` | Coupon fully redeemed |
+components:
+  schemas:
+    CheckoutRequestRequest:
+      type: object
+      description: |-
+        Input for ``POST /v1/carts/{cart_id}/checkout``.
+
+        The ``Idempotency-Key`` header is validated by the view, not here, because
+        DRF serializers operate on the request body, not headers.
+      properties:
+        payment_method_id:
+          type: string
+          format: uuid
+          description: UUID of the `PaymentMethod` to charge. The payment method must
+            belong to the active tenant and be in a chargeable state.
+        address_id:
+          type: string
+          format: uuid
+          description: UUID of the shipping `Address`. The address must belong to
+            the same `user_id` as the cart and must not be soft-deleted.
+      required:
+      - address_id
+      - payment_method_id
+    CheckoutResponse:
+      type: object
+      description: |-
+        Response body for a successful checkout (HTTP 202 Accepted).
+
+        Fields mirror the ``CheckoutResult`` dataclass and the payload stored in
+        ``IdempotencyRecord.response_body``.  Both original responses and
+        idempotent replays use this serializer so the client always receives an
+        identical shape.
+      properties:
+        order_id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: UUID of the newly created `Order`. Stable — use this to poll
+            order status or list order items.
+        payment_id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: UUID of the `Payment` record created for this checkout. Poll
+            this to track the authorisation state (`REQUIRES_CONFIRMATION → AUTHORIZED
+            → CAPTURED → SUCCEEDED`).
+        payment_status:
+          type: string
+          readOnly: true
+          description: '`pending` — the payment authorisation is being processed asynchronously
+            by the Celery `payments` worker. `authorized` — the gateway confirmed
+            the charge inline (only for synchronous gateways; not used in the current
+            iteration).'
+        total:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,12}(?:\.\d{0,2})?$
+          readOnly: true
+          description: Amount charged (or to be charged) in `currency` units. This
+            is `cart.total_after_discount` snapshotted at checkout time; it does not
+            change after the order is created.
+        currency:
+          type: string
+          readOnly: true
+          description: ISO 4217 three-letter currency code inherited from the cart
+            (e.g. `USD`, `EUR`, `SAR`).
+          maxLength: 3
+      required:
+      - currency
+      - order_id
+      - payment_id
+      - payment_status
+      - total
+    ProblemDetail:
+      type: object
+      description: |-
+        RFC 7807 Problem Details object (``application/problem+json``).
+
+        Returned by all error responses in cart_system.  The ``type`` field is a
+        URI uniquely identifying the error class.  ``title`` is a short, human-
+        readable summary.  ``status`` mirrors the HTTP status code.  ``detail``
+        carries the instance-specific diagnostic message.  Additional members
+        (e.g. ``product_id``) may be present for machine-readable context.
+      properties:
+        type:
+          type: string
+          description: 'A URI that identifies the problem type. Example: `https://cart-system.local/problems/cart/empty`'
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+      required:
+      - detail
+      - status
+      - title
+      - type
+  securitySchemes:
+    TenantDomain:
+      type: apiKey
+      in: header
+      name: X-Tenant-Domain
+      description: The tenant's unique domain (e.g. `acme.mysaas.com`). Required on
+        every non-exempt endpoint. Missing → `400 tenant/missing-header`. Unknown
+        domain → `404 tenant/not-found`. Inactive tenant → `403 tenant/disabled`.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
+tags:
+- name: Checkout
+  description: Checkout a shopping cart. Accepts payment method, shipping address,
+    and an idempotency key. Runs under a Redis distributed lock + Postgres row lock
+    to guarantee exactly-once order creation. Returns `202 Accepted` immediately;
+    the actual payment authorisation happens asynchronously via the Celery `payments`
+    queue.
+- name: Cart
+  description: 'Manage the shopping cart — add items, remove items, apply/remove coupons,
+    and inspect the current totals. Every cart is scoped to a single tenant and customer
+    (`user_id`). Cart state transitions: `ACTIVE → CHECKED_OUT`.'
+- name: Coupon
+  description: Manage discount coupons for a tenant. Coupons are either **percentage**
+    or **fixed-amount**. Constraints (minimum cart value, country allowlist, usage
+    limits, validity window) are evaluated at apply-time and re-validated at checkout.
+- name: Payment
+  description: 'Inspect and manage payment records and stored payment methods. Payment
+    status follows the FSM: `REQUIRES_CONFIRMATION → AUTHORIZED → CAPTURED → SUCCEEDED`
+    (or `FAILED / CANCELLED / REFUNDED`).'
+- name: Catalog
+  description: Product catalog — prices, stock levels, and metadata.
+- name: Addresses
+  description: Manage customer shipping addresses. Soft-deleted addresses are retained
+    for order-history integrity. At most one address may be the default per customer
+    within a tenant.
+- name: Tenant
+  description: Tenant provisioning and management (ops/admin use only).
+externalDocs:
+  description: Full architecture and project spec
+  url: https://github.com/cart-system/docs/blob/main/PROJECT_SPEC.md

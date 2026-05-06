@@ -20,6 +20,12 @@ drf-spectacular==0.27.*        # PROJECT_SPEC §4.8 / §5.4 — OpenAPI 3.1
 # --- Production runtime ----------------------------------------------------
 gunicorn==22.*                 # WSGI server for prod; asgi/uvicorn added later
 
+# --- Redis + async workers -------------------------------------------------
+# PROJECT_SPEC §4.4 — redis-py directly for distributed locks (SET NX PX + Lua).
+# PROJECT_SPEC §4.6 — Celery on Redis broker for payment/invoice/notification queues.
+redis==5.*                     # redis-py 5 — sync client; supports RESP3, decode_responses
+celery==5.*                    # Celery 5 — mature, Django-native, explicit retries/queues
+
 # --- Testing ---------------------------------------------------------------
 # PROJECT_SPEC §6.5 mandates pytest + pytest-django + factory_boy. factory_boy
 # is deferred until model factories are introduced in a later iteration; for
@@ -27,3 +33,4 @@ gunicorn==22.*                 # WSGI server for prod; asgi/uvicorn added later
 # fewer moving parts.
 pytest==8.*                    # PROJECT_SPEC §6.5 — test runner
 pytest-django==4.*             # PROJECT_SPEC §6.5 — Django integration for pytest
+fakeredis[lua]==2.*            # In-memory Redis stub for unit tests — [lua] extra enables Lua EVAL support

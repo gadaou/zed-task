@@ -69,6 +69,15 @@ class Product(TenantAwareModel):
                 check=Q(price__gte=0),
                 name="ck_product_price_nonneg",
             ),
+            # Schema-level belt-and-suspenders for stock non-negativity.
+            # PositiveIntegerField already prevents negative ORM writes; this
+            # CHECK is the last resort against raw SQL or ORM bypass (e.g.
+            # a racing stock decrement that slips past the conditional UPDATE
+            # guard in CheckoutService).
+            models.CheckConstraint(
+                check=Q(stock__gte=0),
+                name="ck_product_stock_nonneg",
+            ),
             # Validate ISO 4217 format (3 uppercase ASCII letters) at the DB.
             # This is a lightweight syntactic check; semantic validity (the code
             # actually exists in the ISO list) is left to the serializer layer.

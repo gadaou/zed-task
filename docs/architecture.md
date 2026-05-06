@@ -19,17 +19,20 @@ schema or database provisioning.
 | App | Has models + services | Notes |
 |---|---|---|
 | `apps/tenant` | Yes | `Tenant`, `TenantAwareModel`, `TenantAwareManager`, `TenantMiddleware` |
-| `apps/catalog` | Yes | `Product` — price, stock, currency |
-| `apps/cart` | Yes | `Cart`, `CartItem`, full add/remove/recalculate service |
+| `apps/catalog` | Yes | `Product` — price, stock, currency; `ck_product_stock_nonneg` DB CHECK added |
+| `apps/cart` | Yes | `Cart`, `CartItem`, full add/remove/recalculate service; checkout URL wired |
 | `apps/coupon` | Yes | `Coupon`, `CartCoupon`, full apply/remove/revalidate service + rule registry |
 | `apps/addresses` | Yes | `Address` — soft-delete, one default per user |
-| `apps/order` | Scaffold only | Models exist; service deferred to a later iteration |
-| `apps/payment` | Scaffold only | Interface defined; no gateway implementation yet |
-| `apps/core` | Scaffold only | Shared utilities; idempotency record planned |
+| `apps/order` | Yes | `Order`, `OrderItem`, `CheckoutService` (full production flow), typed exceptions, DRF view + serializer, integration + API tests |
+| `apps/payment` | Yes | `Payment`, `PaymentMethod`; `PaymentGateway` ABC + registry + 3 dummy gateways; `PaymentService` (authorize/capture/void/refund); `authorize_payment` Celery task; full contract + service + registry tests — see [docs/payment-gateways.md](payment-gateways.md) |
+| `apps/core` | Yes | `IdempotencyRecord` model + migration, `redis_lock` (fenced Lua), `IdempotencyManager`, `CoreDomainError` subclasses |
 
-Redis is used as a Celery broker and will carry distributed locks at checkout
-(`lock:checkout:{tenant_id}:{cart_id}`, `lock:coupon:{tenant_id}:{coupon_code}`);
-that integration lands with the checkout iteration.
+Redis is active for:
+- Distributed checkout lock: `lock:checkout:{tenant_id}:{cart_id}` — `SET NX PX` + fenced Lua `compare-token-then-DEL` release.
+- Idempotency in-progress sentinel: `idem:{tenant_id}:{key}` — set before the lock, cleared in `finally` on success or failure.
+- Celery broker (db/1) + result backend (db/2) — three named queues: `payments`, `invoices`, `notifications`.
+
+Celery is configured with `CELERY_TASK_ALWAYS_EAGER=True` in test settings so the `authorize_payment` task runs synchronously in tests without a real broker.
 
 ---
 
@@ -67,6 +70,11 @@ bootstrap, no migration.
 │  composite-FK same-tenant enforcement at the DB layer        │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**Key Guarantees:**
+- No double checkout — tenant context is resolved and locked to a single `Tenant` row before any service code runs; a mismatched or missing header aborts the request before touching any data.
+- No coupon overuse — `TenantAwareManager` auto-scopes every queryset, so a coupon belonging to tenant B is invisible to tenant A's apply call regardless of what the client sends.
+- Strong tenant isolation — three independent enforcement layers (middleware, ORM manager, schema indexes) must all fail simultaneously for cross-tenant data to leak; each layer is independently testable and independently auditable.
 
 ### 2.3 Enforcement layers — detail
 
@@ -270,6 +278,57 @@ FIXED discounts are applied against the post-PERCENTAGE-discount subtotal, clamp
 
 The DB `CHECK ck_cart_total_after_discount_nonneg` is the schema-level safety net that the cart total can never go negative.
 
+### 4.5 Coupon validation flow
+
+The diagram below traces a single `apply_coupon_to_cart` call from the initial request through every guard layer, including all failure exits.
+
+```mermaid
+flowchart TD
+    A([Client: apply coupon code]) --> B[Resolve coupon\nSELECT FOR UPDATE\nWHERE code=? AND is_active=True]
+
+    B --> C{Coupon found?}
+    C -- No --> ERR1([coupon/not-found\n404])
+    C -- Yes --> D[Lock cart row\nSELECT FOR UPDATE]
+
+    D --> E{Already applied\nto this cart?}
+    E -- Yes --> ERR2([coupon/already-applied\n409])
+    E -- No --> F{Stacking policy\ncheck}
+
+    F -- Violation --> ERR3([coupon/stacking-violation\n409])
+    F -- Pass --> G[Build CouponValidationContext\ncart_total, currency,\ncustomer_country, now]
+
+    G --> H[CouponValidator.validate]
+
+    subgraph validator [Built-in checks — always run first]
+        H --> I{is_active?}
+        I -- No --> ERR4([coupon/expired\n422])
+        I -- Yes --> J{Validity window\nstarts_at / ends_at}
+        J -- Outside window --> ERR5([coupon/expired\n422])
+        J -- Inside window --> K{usage_limit\nused_count >= limit?}
+        K -- Limit reached --> ERR6([coupon/limit-reached\n422])
+        K -- Within limit --> L[JSON-driven rules\nmin_total, allowed_countries, ...]
+    end
+
+    L --> M{All rules pass?}
+    M -- Rule failed --> ERR7([coupon/constraint-failed\n422])
+    M -- All pass --> N[Compute discount snapshot\nPERCENTAGE or FIXED logic]
+
+    N --> O[INSERT CartCoupon\ndiscount_amount snapshot]
+
+    O --> P{Conditional increment\nUPDATE coupon\nWHERE used_count < usage_limit}
+    P -- 0 rows updated\nracing increment --> ERR8([coupon/limit-reached\n409 — rollback])
+    P -- 1 row updated --> Q[recalculate_cart\ntotal_price, discount_amount,\ntotal_after_discount, version++]
+
+    Q --> R([Cart returned\nwith updated totals])
+```
+
+**Key Guarantees:**
+- No double checkout — the cart row lock (step 2) serialises concurrent apply and checkout calls on the same cart; the `UniqueConstraint(cart, coupon)` is a DB-level backstop against a re-apply race.
+- No coupon overuse — the conditional `UPDATE … WHERE used_count < usage_limit` (step after INSERT) closes every race window: validator pass + row lock + conditional increment together form a three-layer guard; the DB `CHECK ck_coupon_used_within_limit` is the schema-level last resort.
+- Strong tenant isolation — `TenantAwareManager` scopes the initial `SELECT FOR UPDATE` to the active tenant's coupons; a code that belongs to another tenant raises `coupon/not-found` rather than leaking that the coupon exists.
+
+**Failure path rollback.** Every failure exit between `BEGIN` and `COMMIT` raises a typed `CouponDomainError` subclass. The `@transaction.atomic` boundary rolls back atomically — any `CartCoupon` row inserted in the same transaction is undone, and `used_count` is never incremented for a failed apply.
+
 ---
 
 ## 5. Concurrency & Consistency
@@ -339,6 +398,11 @@ sequenceDiagram
     T2->>DB: validate: used_count (10) >= usage_limit (10) ✗
     T2->>DB: ROLLBACK  -- CouponLimitReached raised
 ```
+
+**Key Guarantees:**
+- No double checkout — the `SELECT FOR UPDATE` on the cart row serialises concurrent checkout and coupon-apply attempts on the same cart; only one transaction proceeds at a time.
+- No coupon overuse — the conditional `UPDATE … WHERE used_count < usage_limit` closes the race window that the validator alone cannot: even if two transactions both pass the pre-write check, exactly one will increment and the other will raise `CouponLimitReached` and roll back.
+- Strong tenant isolation — every queryset in this path goes through `TenantAwareManager`, so `T1` and `T2` can only contend on rows that belong to the same tenant; cross-tenant rows are not visible.
 
 | Guard | Catches |
 |---|---|
@@ -436,6 +500,134 @@ Several complexity-adding patterns were deliberately deferred:
 | `apps/order`, `apps/payment`, `apps/invoices` | These apps are scaffolded (models/migrations exist) but their service logic ships in subsequent iterations. The scaffold establishes the naming and directory conventions without locking in premature implementation decisions. |
 
 The governing principle (spec §7.5): "No premature distribution. The system is one Django process and one database until measured load demands otherwise."
+
+---
+
+## 8. Checkout Flow
+
+Checkout is the linearization point — the only path that combines a Redis distributed lock, a Postgres transaction with row locks, async payment dispatch, and idempotency enforcement in a single flow.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant DjangoApp as Django App
+    participant Redis
+    participant PostgreSQL
+    participant CeleryWorker as Celery Worker
+    participant PaymentGateway as Payment Gateway
+
+    Client->>DjangoApp: POST /v1/carts/{id}/checkout<br/>(Idempotency-Key: &lt;uuid&gt;)
+
+    note over DjangoApp,Redis: Step 1 — Idempotency check
+    DjangoApp->>Redis: GET idempotency:{tenant}:{key}
+    Redis-->>DjangoApp: miss (first request)
+
+    note over DjangoApp,Redis: Step 2 — Acquire distributed lock
+    DjangoApp->>Redis: SET lock:checkout:{tenant}:{cart} &lt;token&gt; NX PX &lt;ttl&gt;
+    Redis-->>DjangoApp: OK (lock acquired)
+
+    note over DjangoApp,PostgreSQL: Steps 3–10 run inside transaction.atomic()
+    DjangoApp->>PostgreSQL: BEGIN
+
+    note over DjangoApp,PostgreSQL: Step 3 — Lock cart row
+    DjangoApp->>PostgreSQL: SELECT * FROM cart WHERE id=? FOR UPDATE
+
+    note over DjangoApp,PostgreSQL: Step 4 — Revalidate coupons
+    DjangoApp->>PostgreSQL: SELECT * FROM coupon WHERE id IN (...) FOR UPDATE
+    DjangoApp->>PostgreSQL: validate constraints + recompute discounts
+
+    note over DjangoApp,PostgreSQL: Step 5 — Validate stock
+    DjangoApp->>PostgreSQL: SELECT stock FROM product WHERE id IN (...)
+
+    note over DjangoApp,PostgreSQL: Step 6 — Create order + payment intent
+    DjangoApp->>PostgreSQL: INSERT INTO orders (cart snapshot, totals)
+    DjangoApp->>PostgreSQL: INSERT INTO payment_intent (status=requires_confirmation)
+
+    note over DjangoApp,PostgreSQL: Step 7 — Deduct stock
+    DjangoApp->>PostgreSQL: UPDATE product SET stock = stock - qty WHERE id=?
+
+    note over DjangoApp,PostgreSQL: Step 8 — Record idempotency result
+    DjangoApp->>PostgreSQL: INSERT INTO idempotency_record (key, status=success, response)
+
+    note over DjangoApp,PostgreSQL: Step 9 — Commit
+    DjangoApp->>PostgreSQL: COMMIT
+
+    note over DjangoApp,Redis: Step 10 — Release lock
+    DjangoApp->>Redis: EVAL "if GET key == token then DEL key" (Lua)
+
+    note over DjangoApp,CeleryWorker: Step 11 — Trigger async payment (on_commit)
+    DjangoApp->>Redis: LPUSH celery:payments {task: authorize, payment_intent_id}
+    Redis-->>CeleryWorker: task dequeued
+    CeleryWorker->>PaymentGateway: authorize(charge)
+    PaymentGateway-->>CeleryWorker: AuthorizationResult
+
+    DjangoApp-->>Client: 202 Accepted {payment_status: "pending"}
+```
+
+**Key Guarantees:**
+- No double checkout — the Redis `SET NX` lock allows only one checkout per `(tenant, cart)` to enter the critical section at a time; the idempotency record deduplicates retries that arrive after the lock is released.
+- No coupon overuse — coupon rows are re-locked with `SELECT FOR UPDATE` and revalidated inside the checkout transaction (step 4), so any coupon that became invalid or over-limit between apply-time and checkout-time is caught before the order is committed.
+- Strong tenant isolation — the distributed lock key is namespaced by `tenant_id` (`lock:checkout:{tenant}:{cart}`), and every Postgres query inside the transaction runs through `TenantAwareManager`; a checkout for tenant A cannot observe or mutate tenant B's cart, coupons, stock, or orders.
+
+### How the pieces interlock
+
+**Idempotency check first.** The `idempotency_record` lookup against Redis (or Postgres, depending on the iteration) runs before any lock or DB write. A repeat request with the same `Idempotency-Key` returns the stored response immediately — no lock acquired, no transaction opened, no charge attempted. A request that is still `in_progress` returns `409 idempotency/in-progress`.
+
+**Redis lock wraps the DB transaction, not the other way around.** The distributed lock (`SET NX PX`) is acquired before `BEGIN` and released after `COMMIT`. This is deliberate: the lock also guards the window between `COMMIT` and the gateway call (enqueueing the Celery task). If the lock only covered the Postgres transaction, two concurrent checkouts could both commit valid orders and both enqueue payment tasks before either lock expired. The TTL is sized to the gateway timeout plus a safety margin.
+
+**`transaction.on_commit` for the Celery task.** The payment task is enqueued via `transaction.on_commit(...)`, which fires only after a successful `COMMIT`. If the transaction rolls back — due to a stock failure, a coupon constraint violation, or any other domain error — the task is never enqueued. There is no payment task for an order that was never created.
+
+**Failure path.** Any exception raised between `BEGIN` and `COMMIT` rolls back the transaction atomically (order, stock deduction, idempotency record all undone). The Redis lock is released in a `try/finally` block that wraps the entire critical section — including the `COMMIT` — so the lock is always freed regardless of how the checkout terminates.
+
+**Response shape.** Gateways that require a redirect or 3DS challenge return `202 Accepted` with `payment_status: "pending"`. Inline gateways that resolve synchronously return `200 OK` with `payment_status: "authorized"`. Both paths converge on the same `PaymentIntent` finite state machine; the final captured/failed state arrives via webhook or a Celery poller.
+
+---
+
+## 9. Pluggable Payment Gateways
+
+The full design, extension guide, and example skeleton are in
+**[docs/payment-gateways.md](payment-gateways.md)**.
+
+### Summary
+
+`apps/payment/gateways/` implements:
+
+| Component | File | Purpose |
+|---|---|---|
+| `PaymentGateway` ABC | `base.py` | Contract every gateway must satisfy |
+| Result dataclasses | `base.py` | `AuthorizationResult`, `CaptureResult`, `VoidResult`, `RefundResult` |
+| Registry | `registry.py` | `register_payment_gateway` / `get_payment_gateway` / `unregister_payment_gateway` |
+| Dummy gateways | `dummy.py` | `DummySuccessGateway`, `DummyFailingGateway`, `DummyTimeoutGateway` |
+
+`PaymentService` (`apps/payment/services.py`) is the only caller of gateway
+methods.  It enforces FSM transitions with status-guarded UPDATEs:
+
+```python
+rows = Payment.objects.filter(
+    pk=payment.pk,
+    status=Payment.Status.REQUIRES_CONFIRMATION,
+).update(status=Payment.Status.AUTHORIZED, gateway_authorization_id=ref)
+```
+
+The `zero-rows-updated` path is the idempotency guard — a Celery re-delivery
+after a successful commit is a safe no-op.
+
+### Data flow
+
+```
+CheckoutService
+    └─ creates Payment(status=REQUIRES_CONFIRMATION, provider=<slug>)
+    └─ transaction.on_commit → enqueue authorize_payment task
+
+authorize_payment (Celery, queue=payments)
+    └─ PaymentService.authorize_payment(payment_id)
+           └─ get_payment_gateway(payment.provider)  ← registry lookup
+           └─ gateway.authorize_payment(order, payment_method)
+           └─ FSM-guarded UPDATE → AUTHORIZED or FAILED
+```
+
+No `if/else` on gateway slug anywhere in the service or task layer.
 
 ---
 
