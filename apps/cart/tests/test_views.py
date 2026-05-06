@@ -667,6 +667,54 @@ def test_cart_id_checkout_succeeds_for_correct_user_id(
 
 
 @pytest.mark.django_db(transaction=True)
+def test_checkout_empty_cart_returns_422(api_client, tenant, user_id, address, payment_method):
+    """CartCheckoutView maps CartEmpty → 422 cart/empty for the action endpoint."""
+    cart = Cart.objects.create(user_id=user_id)
+    cart.selected_address = address
+    cart.selected_payment_method = payment_method
+    cart.save(update_fields=["selected_address", "selected_payment_method"])
+
+    resp = api_client.post(
+        _CHECKOUT,
+        data={},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        **_headers(tenant.domain, user_id),
+    )
+    assert resp.status_code == 422
+    assert "cart/empty" in resp.json().get("type", "")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_checkout_oos_returns_422(api_client, tenant, user_id, address, payment_method):
+    """CartCheckoutView maps ProductOutOfStock → 422 product/out-of-stock for the action endpoint."""
+    from apps.catalog.models import Product as _Product
+
+    low_stock = _Product.objects.create(
+        name="Low-stock Widget",
+        price=Decimal("10.00"),
+        currency="USD",
+        stock=1,
+    )
+    cart = Cart.objects.create(user_id=user_id)
+    add_product_to_cart(cart, low_stock, quantity=2)  # exceeds available stock
+    cart.refresh_from_db()
+    cart.selected_address = address
+    cart.selected_payment_method = payment_method
+    cart.save(update_fields=["selected_address", "selected_payment_method"])
+
+    resp = api_client.post(
+        _CHECKOUT,
+        data={},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        **_headers(tenant.domain, user_id),
+    )
+    assert resp.status_code == 422
+    assert "out-of-stock" in resp.json().get("type", "")
+
+
+@pytest.mark.django_db(transaction=True)
 def test_tenant_a_cannot_checkout_tenant_b_cart(api_client, monkeypatch):
     """A cart_id that belongs to tenant B is not found when queried under tenant A."""
     import fakeredis
