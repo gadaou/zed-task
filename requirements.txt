@@ -1,0 +1,21 @@
+# cart_system — runtime dependencies
+#
+# Pins are constrained to minor versions ("==X.Y.*") so that patch upgrades
+# flow in automatically while breaking changes do not. Every dependency added
+# here must have a clear justification tied back to PROJECT_SPEC.md.
+
+# --- Web framework ---------------------------------------------------------
+Django==5.1.*                  # PROJECT_SPEC §4.8 — required
+djangorestframework==3.15.*    # PROJECT_SPEC §4.8 — REST API layer
+
+# --- Configuration ---------------------------------------------------------
+django-environ==0.11.*         # 12-factor env parsing (DATABASE_URL, etc.)
+
+# --- Database driver -------------------------------------------------------
+psycopg[binary]==3.2.*         # PostgreSQL driver (psycopg3, modern stack)
+
+# --- API documentation -----------------------------------------------------
+drf-spectacular==0.27.*        # PROJECT_SPEC §4.8 / §5.4 — OpenAPI 3.1
+
+# --- Production runtime ----------------------------------------------------
+gunicorn==22.*                 # WSGI server for prod; asgi/uvicorn added later
