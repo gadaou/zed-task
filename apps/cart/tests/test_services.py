@@ -24,10 +24,15 @@ from decimal import Decimal
 
 import pytest
 
-from apps.cart.models import CartItem
+import uuid
+
+from apps.cart.models import Cart, CartItem
 from apps.cart.services import (
     add_product_to_cart,
+    get_or_create_active_cart,
     remove_product_from_cart,
+    set_cart_address,
+    set_cart_payment_method,
 )
 
 
@@ -94,3 +99,69 @@ def test_remove_product_deletes_item_and_recalculates_total(
 
     assert CartItem.objects.filter(cart=updated).count() == 0
     assert updated.total_price == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# New service helpers: get_or_create_active_cart, set_cart_address,
+# set_cart_payment_method
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_get_or_create_active_cart_creates_new_cart(tenant) -> None:
+    """First call creates an ACTIVE cart for the user."""
+    user_id = uuid.uuid4()
+    assert Cart.objects.filter(user_id=user_id).count() == 0
+
+    cart = get_or_create_active_cart(user_id)
+
+    assert cart.user_id == user_id
+    assert cart.status == Cart.Status.ACTIVE
+    assert Cart.objects.filter(user_id=user_id, status="ACTIVE").count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_get_or_create_active_cart_returns_existing(tenant) -> None:
+    """Subsequent calls return the same cart, not a duplicate."""
+    user_id = uuid.uuid4()
+    c1 = get_or_create_active_cart(user_id)
+    c2 = get_or_create_active_cart(user_id)
+
+    assert c1.id == c2.id
+    assert Cart.objects.filter(user_id=user_id, status="ACTIVE").count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_set_cart_address_updates_selection_and_bumps_version(
+    cart_factory, tenant
+) -> None:
+    """set_cart_address stores the FK and increments version."""
+    from apps.addresses.models import Address
+
+    cart = cart_factory()
+    initial_version = cart.version
+    addr = Address.objects.create(
+        user_id=cart.user_id, country="US", city="NY", details="5th Ave"
+    )
+
+    updated = set_cart_address(cart, addr)
+
+    assert updated.selected_address_id == addr.id
+    assert updated.version == initial_version + 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_set_cart_payment_method_updates_selection_and_bumps_version(
+    cart_factory, tenant
+) -> None:
+    """set_cart_payment_method stores the FK and increments version."""
+    from apps.payment.models import PaymentMethod
+
+    cart = cart_factory()
+    initial_version = cart.version
+    pm = PaymentMethod.objects.create(gateway_slug="dummy_success")
+
+    updated = set_cart_payment_method(cart, pm)
+
+    assert updated.selected_payment_method_id == pm.id
+    assert updated.version == initial_version + 1

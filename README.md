@@ -23,7 +23,7 @@ Core stack:
 - **Django + Django REST Framework** for API delivery and service-layer architecture.
 - **PostgreSQL** as the system of record for all tenant data.
 - **Redis** for distributed locks, idempotency in-progress markers, and cache/coordination concerns.
-- **Celery** for async workloads such as payment authorization/finalization and invoice/notification pipelines.
+- **Celery** for async workloads such as payment authorization/finalization and invoice/notification pipelines. Redis is used as the Celery broker for this assessment to keep the deployment simple and aligned with the existing Redis dependency used for locks and idempotency. For higher-scale production workloads, the broker can be replaced with RabbitMQ or another dedicated messaging system without changing the payment domain logic.
 
 High-level request flow:
 
@@ -147,7 +147,7 @@ The architecture is designed to scale horizontally without requiring a distribut
 **Longer-term (write scaling + multi-region):**
 - Every table carries `tenant_id` and every query filters by it. Citus (Postgres extension) can shard by `tenant_id` column with no application-layer changes — the `all_tenants()` manager escape hatch is already the only cross-tenant query path.
 - The Celery queue split (`payments`, `invoices`, `notifications`) allows scaling workers independently — payment workers are I/O-bound on gateway latency; invoice workers are CPU-bound on PDF rendering.
-- The event-driven skeleton is already in place (`transaction.on_commit` → Celery); migrating to an event broker (Kafka, SQS) is a task-dispatch replacement, not an architectural change.
+- The event-driven skeleton is already in place (`transaction.on_commit` → Celery); migrating to an event broker (Kafka, SQS, or RabbitMQ) is a task-dispatch replacement, not an architectural change. The payment domain logic is fully decoupled from the broker — swapping `CELERY_BROKER_URL` and the relevant transport package is the only change required.
 
 **Explicit non-goals (for now):**
 Multi-region active-active, per-tenant databases, and event sourcing are deferred per spec §7.5: "No premature distribution."

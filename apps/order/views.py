@@ -46,6 +46,8 @@ from apps.core.openapi import (
     checkout_response_examples,
     problem_response,
 )
+from apps.core.responses import map_exception as _map_exception
+from apps.core.responses import problem as _problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.order.exceptions import (
     AddressNotFound,
@@ -62,64 +64,6 @@ from apps.order.services import CheckoutService
 from apps.core.idempotency import compute_request_hash
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# RFC 7807 problem+json helpers
-# ---------------------------------------------------------------------------
-
-def _problem(type_: str, title: str, status: int, detail: str, **extra) -> Response:
-    """Build a minimal RFC 7807 problem+json response dict."""
-    body = {
-        "type": f"https://cart-system.local/problems/{type_}",
-        "title": title,
-        "status": status,
-        "detail": detail,
-    }
-    body.update(extra)
-    return Response(body, status=status, content_type="application/problem+json")
-
-
-# ---------------------------------------------------------------------------
-# Exception → HTTP mapping
-# ---------------------------------------------------------------------------
-
-_EXCEPTION_MAP: dict[type, tuple[int, str]] = {
-    # 404 Not Found
-    CartNotFound: (404, "Cart not found"),
-    AddressNotFound: (404, "Address not found"),
-    PaymentMethodInvalid: (404, "Payment method not found"),
-    # 409 Conflict
-    CartStaleVersion: (409, "Cart was modified concurrently — retry"),
-    CartAlreadyCheckedOut: (409, "Cart is already checked out"),
-    LockNotAcquired: (409, "A concurrent checkout is already in progress"),
-    IdempotencyConflict: (409, "Idempotency-Key reused with a different request"),
-    IdempotencyInProgress: (409, "Request with this Idempotency-Key is in progress"),
-    # 422 Unprocessable (business-rule failures)
-    CartEmpty: (422, "Cart is empty"),
-    ProductOutOfStock: (422, "A product is out of stock"),
-}
-
-
-def _map_exception(exc: Exception) -> Response:
-    """Convert a domain exception to an RFC 7807 problem+json response."""
-    exc_type = type(exc)
-
-    if exc_type in _EXCEPTION_MAP:
-        status, title = _EXCEPTION_MAP[exc_type]
-        type_slug = getattr(exc, "type", "error/unknown")
-        return _problem(type_slug, title, status, str(exc))
-
-    # CouponDomainError subclasses not in the map (e.g. CouponExpired)
-    if isinstance(exc, CouponDomainError):
-        return _problem(exc.type, "Coupon validation failed", 422, exc.detail)
-
-    # Generic OrderDomainError fallback
-    if isinstance(exc, OrderDomainError):
-        return _problem(exc.type, "Checkout error", 422, exc.detail)
-
-    # Re-raise unexpected exceptions so Django's 500 handler catches them.
-    raise exc
 
 
 # ---------------------------------------------------------------------------

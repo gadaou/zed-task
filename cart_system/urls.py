@@ -27,7 +27,10 @@ from drf_spectacular.views import (
 
 api_v1_patterns = [
     path("tenants/", include(("apps.tenant.urls", "tenant"), namespace="tenants")),
+    # Resource-oriented cart routes (e.g. /{cart_id}/checkout/).
     path("carts/", include(("apps.cart.urls", "cart"), namespace="carts")),
+    # Action-style cart routes operating on the caller's single active cart.
+    path("cart/", include(("apps.cart.urls_actions", "cart_actions"), namespace="cart_actions")),
     path("coupons/", include(("apps.coupon.urls", "coupon"), namespace="coupons")),
     path("payments/", include(("apps.payment.urls", "payment"), namespace="payments")),
     path("orders/", include(("apps.order.urls", "order"), namespace="orders")),

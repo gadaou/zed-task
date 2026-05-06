@@ -50,6 +50,80 @@ from django.db.models.functions import Coalesce
 from apps.cart.models import Cart, CartItem
 from apps.catalog.models import Product
 
+# TYPE_CHECKING guards avoid circular imports at runtime; the models are used
+# only in type annotations so this is safe.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from apps.addresses.models import Address
+    from apps.payment.models import PaymentMethod
+
+
+def get_or_create_active_cart(user_id: UUID) -> Cart:
+    """Return the single ACTIVE cart for ``user_id`` in the current tenant.
+
+    If no active cart exists, one is created.  The caller is responsible for
+    having an active tenant context (TenantMiddleware or ``tenant_context``).
+
+    Args:
+        user_id: UUID of the customer whose active cart is wanted.
+
+    Returns:
+        The existing or newly-created active Cart.
+    """
+    cart, _ = Cart.objects.get_or_create(
+        user_id=user_id,
+        status=Cart.Status.ACTIVE,
+        defaults={"currency": "USD"},
+    )
+    return cart
+
+
+@transaction.atomic
+def set_cart_address(cart: Cart, address: "Address") -> Cart:
+    """Set ``address`` as the selected shipping address on ``cart``.
+
+    Acquires a row lock on the cart, updates ``selected_address``, and bumps
+    ``version`` so concurrent mutations are detected (PROJECT_SPEC §3.4).
+
+    Args:
+        cart:    The Cart aggregate to mutate.
+        address: An Address instance belonging to the same tenant and user.
+
+    Returns:
+        The same Cart instance with ``selected_address`` and ``version``
+        refreshed from the database.
+    """
+    locked = Cart.objects.select_for_update().get(pk=cart.pk)
+    locked.selected_address = address
+    locked.version = F("version") + 1
+    locked.save(update_fields=["selected_address", "version", "updated_at"])
+    locked.refresh_from_db(fields=["selected_address_id", "version"])
+    return locked
+
+
+@transaction.atomic
+def set_cart_payment_method(cart: Cart, payment_method: "PaymentMethod") -> Cart:
+    """Set ``payment_method`` as the selected payment method on ``cart``.
+
+    Acquires a row lock on the cart, updates ``selected_payment_method``, and
+    bumps ``version`` (PROJECT_SPEC §3.4).
+
+    Args:
+        cart:           The Cart aggregate to mutate.
+        payment_method: A PaymentMethod instance belonging to the same tenant.
+
+    Returns:
+        The same Cart instance with ``selected_payment_method`` and ``version``
+        refreshed from the database.
+    """
+    locked = Cart.objects.select_for_update().get(pk=cart.pk)
+    locked.selected_payment_method = payment_method
+    locked.version = F("version") + 1
+    locked.save(update_fields=["selected_payment_method", "version", "updated_at"])
+    locked.refresh_from_db(fields=["selected_payment_method_id", "version"])
+    return locked
+
 
 @transaction.atomic
 def add_product_to_cart(cart: Cart, product: Product, quantity: int) -> Cart:

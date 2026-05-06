@@ -27,6 +27,57 @@ from apps.tenant.context import tenant_context
 from apps.tenant.models import Tenant
 
 
+# ---------------------------------------------------------------------------
+# Gateway registry guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def ensure_dummy_gateways_registered():
+    """Ensure the dummy payment gateways are in the registry for every cart test.
+
+    The ``register_dummies`` fixture in ``apps/payment/tests/conftest.py``
+    has ``autouse=True`` within its own package and **unregisters** the dummy
+    slugs after each test there.  When payment tests run before cart tests in
+    the same session the registry ends up empty, causing cart view tests that
+    exercise the payment-method flow to fail with ``UnsupportedGateway``.
+
+    This fixture re-registers any missing dummy slugs before each cart test
+    and does not touch any slug that is already registered (safe to combine
+    with the payment package's own fixture in mixed-module test runs).
+    """
+    from apps.payment.gateways.dummy import (
+        DummyFailingGateway,
+        DummyGateway,
+        DummySuccessGateway,
+        DummyTimeoutGateway,
+    )
+    from apps.payment.gateways.registry import _REGISTRY, register_payment_gateway
+
+    _to_register = [
+        (DummySuccessGateway.slug, DummySuccessGateway),
+        (DummyFailingGateway.slug, DummyFailingGateway),
+        (DummyTimeoutGateway.slug, DummyTimeoutGateway),
+        (DummyGateway.slug, DummyGateway),
+        ("mock", DummySuccessGateway),
+    ]
+    _registered_now: list[str] = []
+    for slug, cls in _to_register:
+        if slug not in _REGISTRY:
+            register_payment_gateway(slug, cls)
+            _registered_now.append(slug)
+
+    yield
+
+    # Only remove slugs that *this* fixture added — do not remove slugs that
+    # were already registered when this fixture ran (they belong to another
+    # lifecycle).
+    from apps.payment.gateways.registry import unregister_payment_gateway
+    for slug in _registered_now:
+        if slug in _REGISTRY:
+            unregister_payment_gateway(slug)
+
+
 @pytest.fixture
 def tenant(db) -> Tenant:
     """Create a Tenant and activate it for the duration of the test.

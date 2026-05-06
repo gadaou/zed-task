@@ -33,6 +33,11 @@ from apps.tenant.models import TenantAwareModel
 
 
 class Cart(TenantAwareModel):
+    # Forward reference — the actual FK targets are declared in other apps so
+    # we use string labels to avoid circular imports.  Both are nullable because
+    # a cart is created before the customer has chosen an address or payment
+    # method; they are set by the add-address / add-payment-method actions and
+    # consumed at checkout time.
     """A mutable, per-customer, per-tenant shopping cart.
 
     Lifecycle: ``ACTIVE`` → (checkout service) → ``CHECKED_OUT``.
@@ -99,6 +104,28 @@ class Cart(TenantAwareModel):
     # Incremented on every mutating write. Update statements compare
     # ``WHERE id = %s AND version = %s`` and raise if zero rows affected.
     version = models.PositiveIntegerField(default=0)
+
+    # The customer's selected shipping address for this cart.  Set by the
+    # POST /cart/add-address action; required by POST /cart/checkout.
+    selected_address = models.ForeignKey(
+        "addresses.Address",
+        null=True,
+        blank=True,
+        default=None,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    # The customer's selected payment method for this cart.  Set by the
+    # POST /cart/add-payment-method action; required by POST /cart/checkout.
+    selected_payment_method = models.ForeignKey(
+        "payment.PaymentMethod",
+        null=True,
+        blank=True,
+        default=None,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
 
     class Meta:
         verbose_name = "Cart"

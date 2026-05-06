@@ -65,6 +65,32 @@ from apps.payment.gateways.base import ChargeResult
 
 logger = logging.getLogger(__name__)
 
+
+def add_payment_method(*, gateway_slug: str) -> "PaymentMethod":  # type: ignore[name-defined]
+    """Create and return a new ``PaymentMethod`` in the current tenant.
+
+    Validates that ``gateway_slug`` names a gateway that is actually registered
+    in the registry so clients cannot store an unusable method (PROJECT_SPEC
+    §3.3 — domain code never imports a gateway module directly; registry is the
+    contract).
+
+    Args:
+        gateway_slug: Registered gateway slug (e.g. ``"dummy_success"``).
+
+    Returns:
+        The newly created ``PaymentMethod`` instance.
+
+    Raises:
+        ``UnsupportedGateway``: if ``gateway_slug`` is not in the registry.
+    """
+    from apps.payment.models import PaymentMethod
+
+    # Validates slug; raises UnsupportedGateway if not found.
+    get_gateway(gateway_slug)
+
+    return PaymentMethod.objects.create(gateway_slug=gateway_slug)
+
+
 # These statuses are already past authorization — no second gateway call needed.
 _ALREADY_AUTHORIZED = frozenset(
     ["AUTHORIZED", "CAPTURED", "SUCCEEDED", "REFUNDED"]
