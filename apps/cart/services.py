@@ -73,20 +73,31 @@ if TYPE_CHECKING:
 def get_or_create_active_cart(user_id: UUID) -> Cart:
     """Return the single ACTIVE cart for ``user_id`` in the current tenant.
 
-    If no active cart exists, one is created.  The caller is responsible for
-    having an active tenant context (TenantMiddleware or ``tenant_context``).
+    If no active cart exists, one is created.
 
-    The ``uq_cart_one_active_per_tenant_user`` partial unique constraint (added
-    in migration 0005) makes the GET→INSERT race impossible at the DB level:
-    concurrent requests may both pass the GET phase, but only one INSERT will
-    win; the loser gets ``IntegrityError`` and Django's ``get_or_create``
-    retries with another GET, returning the winner's row.
+    **Tenant isolation mechanism**
+
+    ``Cart.objects`` is a ``TenantAwareManager``. Its ``get_queryset()`` calls
+    ``get_current_tenant()`` and injects ``WHERE tenant_id = <tenant>`` into
+    every query before it hits the database.  Both the GET and the INSERT legs
+    of the underlying ``get_or_create`` call are therefore automatically scoped
+    to the tenant that ``TenantMiddleware`` placed in the ``ContextVar`` for
+    the current request.  Calling this function without an active tenant context
+    raises ``TenantContextMissing`` before any SQL is issued.
+
+    **Concurrency safety**
+
+    The ``uq_cart_one_active_per_tenant_user`` partial unique index (migration
+    0005) makes the GET→INSERT race impossible: if two concurrent requests both
+    pass the GET phase, only one INSERT succeeds; the loser receives
+    ``IntegrityError`` and Django's ``get_or_create`` retries with another GET,
+    returning the winner's cart.
 
     Args:
         user_id: UUID of the customer whose active cart is wanted.
 
     Returns:
-        The existing or newly-created active Cart.
+        The existing or newly-created active Cart, scoped to the current tenant.
     """
     cart, _ = Cart.objects.get_or_create(
         user_id=user_id,

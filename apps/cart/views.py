@@ -242,6 +242,10 @@ class AddProductView(APIView):
         product_id: UUID = data["product_id"]
         quantity: int = data["quantity"]
 
+        # TenantAwareManager.get_queryset() filters by tenant=get_current_tenant()
+        # before this .get() runs, so the lookup is already scoped to the active
+        # tenant. A product_id that belongs to another tenant raises DoesNotExist
+        # here — not a silent data leak — giving tenant isolation at the DB layer.
         try:
             product = Product.objects.get(pk=product_id)
         except Product.DoesNotExist:

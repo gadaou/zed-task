@@ -695,3 +695,38 @@ def test_tenant_a_cannot_checkout_tenant_b_cart(api_client, monkeypatch):
         HTTP_X_USER_ID=str(user_a),
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.django_db(transaction=True)
+def test_tenant_a_cannot_add_tenant_b_product(api_client):
+    """POST /cart/add-product/ with a product_id from another tenant returns 404.
+
+    Verifies the full stack: TenantMiddleware resolves tenant_a from the
+    X-Tenant-Domain header → TenantAwareManager injects WHERE tenant_id=tenant_a
+    → Product.objects.get(pk=product_b.id) raises DoesNotExist → view returns
+    404 product/not-found.  No cross-tenant data leaks.
+    """
+    from apps.tenant.models import Tenant
+    from apps.tenant.context import tenant_context
+
+    tenant_a = Tenant.objects.create(name="A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
+    tenant_b = Tenant.objects.create(name="B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
+
+    with tenant_context(tenant_b):
+        product_b = Product.objects.create(
+            name="B-only widget",
+            price=Decimal("10.00"),
+            currency="USD",
+            stock=5,
+        )
+
+    user_a = uuid.uuid4()
+    resp = api_client.post(
+        _ADD_PRODUCT,
+        data={"product_id": str(product_b.id), "quantity": 1},
+        format="json",
+        HTTP_X_TENANT_DOMAIN=tenant_a.domain,
+        HTTP_X_USER_ID=str(user_a),
+    )
+    assert resp.status_code == 404
+    assert "product/not-found" in resp.json().get("type", "")
