@@ -1,4 +1,4 @@
-"""Coupon models — ``Coupon``.
+"""Coupon models — ``Coupon``, ``CartCoupon``.
 
 Implements PROJECT_SPEC §2 operations 3–4 (apply/remove coupon) and the bonus
 coupon-constraints section (§2 "Coupon constraints").
@@ -39,6 +39,7 @@ from decimal import Decimal
 from django.db import models
 from django.db.models import F, Q
 
+from apps.cart.models import Cart
 from apps.tenant.models import TenantAwareModel
 
 
@@ -185,3 +186,102 @@ class Coupon(TenantAwareModel):
 
     def __str__(self) -> str:
         return f"Coupon {self.code} ({self.discount_type})"
+
+
+class CartCoupon(TenantAwareModel):
+    """A many-to-many association recording that ``coupon`` is applied to ``cart``.
+
+    Implements the join side of PROJECT_SPEC §2 operation 3 ("Apply coupon")
+    and op 4 ("Remove coupon"). The ``DELETE /v1/carts/{cart_id}/coupons/{id}``
+    endpoint shape implies more than one coupon may be applied to a cart at a
+    time; this model is the storage for that relationship.
+
+    ``discount_amount`` is the *snapshot* of the discount value at the moment
+    the coupon was applied — analogous to ``CartItem.price_snapshot``. The
+    snapshot exists so that:
+
+    * Cart reads can render the per-coupon line without recomputing it.
+    * Removing a coupon can subtract a known, deterministic amount.
+    * Checkout (PROJECT_SPEC §5.3) re-evaluates every constraint and may
+      recompute the discount; the snapshot here is *not* authoritative at
+      finalisation, only at apply-time UX.
+
+    A ``UniqueConstraint`` on ``(cart, coupon)`` makes a re-apply attempt fail
+    fast at the DB layer; the service translates that into the typed
+    ``CouponAlreadyApplied`` domain error.
+
+    Same-tenant invariant: both ``cart`` and ``coupon`` are tenant-aware, and
+    every queryset issued through ``TenantAwareManager`` is already scoped to
+    the active tenant — so a ``CartCoupon`` row's tenant always matches both
+    parents. The composite unique scaffolding ``(tenant, id)`` already on
+    ``Cart`` and ``Coupon`` is the future home of a DB-level same-tenant FK
+    (PROJECT_SPEC §3.2 / §9.7).
+    """
+
+    # ADR-NOTE §6.2: uuid4 → uuid7 migration, same as the rest of the schema.
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    cart = models.ForeignKey(
+        Cart,
+        on_delete=models.CASCADE,
+        related_name="applied_coupons",
+    )
+
+    # PROTECT — coupons are never hard-deleted (they are deactivated), so this
+    # is mostly defensive. If a Coupon is somehow deleted while CartCoupon rows
+    # reference it the FK protects the historical record.
+    coupon = models.ForeignKey(
+        Coupon,
+        on_delete=models.PROTECT,
+        related_name="cart_applications",
+    )
+
+    # Snapshot of the computed discount in ``currency`` at apply-time.
+    # Always >= 0 (DB CHECK ck_cartcoupon_discount_nonneg).
+    discount_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    # ISO 4217 three-letter code; matches Cart.currency at apply-time.
+    currency = models.CharField(max_length=3)
+
+    applied_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Cart Coupon"
+        verbose_name_plural = "Cart Coupons"
+        constraints = [
+            # A coupon may be applied at most once to a given cart. Re-apply
+            # is surfaced by the service as ``CouponAlreadyApplied``.
+            models.UniqueConstraint(
+                fields=["cart", "coupon"],
+                name="uq_cartcoupon_cart_coupon",
+            ),
+            # Forward-compat composite FK scaffolding (PROJECT_SPEC §3.2).
+            models.UniqueConstraint(
+                fields=["tenant", "id"],
+                name="uq_cartcoupon_tenant_id",
+            ),
+            models.CheckConstraint(
+                check=Q(discount_amount__gte=0),
+                name="ck_cartcoupon_discount_nonneg",
+            ),
+            models.CheckConstraint(
+                check=Q(currency__regex=r"^[A-Z]{3}$"),
+                name="ck_cartcoupon_currency_iso4217",
+            ),
+        ]
+        indexes = [
+            # Most frequent service query: "list coupons applied to this cart".
+            models.Index(
+                fields=["tenant", "cart"],
+                name="ix_cartcoupon_tenant_cart",
+            ),
+            # Reverse direction: "where has this coupon been applied?"
+            # Used by admin tooling and the per-customer cap rule (future).
+            models.Index(
+                fields=["tenant", "coupon"],
+                name="ix_cartcoupon_tenant_coupon",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"CartCoupon cart={self.cart_id} coupon={self.coupon_id}"

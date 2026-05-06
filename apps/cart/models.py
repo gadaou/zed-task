@@ -69,6 +69,28 @@ class Cart(TenantAwareModel):
         default=Decimal("0.00"),
     )
 
+    # Sum of every applied coupon's discount snapshot (see apps.coupon.CartCoupon).
+    # Kept in sync by ``recalculate_cart`` after every cart or coupon mutation;
+    # always non-negative (CHECK ck_cart_discount_nonneg).  PROJECT_SPEC §5.3
+    # mandates that checkout re-evaluates every constraint and may recompute
+    # this — the apply-time snapshot is a UX optimisation, not the source of
+    # truth at finalisation.
+    discount_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    # Denormalized payable: total_price - discount_amount, clamped at zero so
+    # over-large fixed coupons cannot push the cart negative.  Stored (rather
+    # than computed on read) to keep cart-read responses cheap (PROJECT_SPEC §5
+    # SLO: GET cart p99 < 300 ms).
+    total_after_discount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
     # ISO 4217 three-letter currency code. Must match the currency on every
     # CartItem in this cart; enforced by the service layer and CartItem.clean().
     currency = models.CharField(max_length=3, default="USD")
@@ -85,6 +107,17 @@ class Cart(TenantAwareModel):
             models.CheckConstraint(
                 check=Q(total_price__gte=0),
                 name="ck_cart_total_nonneg",
+            ),
+            # discount_amount is a sum of non-negative discount snapshots.
+            models.CheckConstraint(
+                check=Q(discount_amount__gte=0),
+                name="ck_cart_discount_nonneg",
+            ),
+            # Payable can never be negative — clamped by recalculate_cart even
+            # when fixed coupons exceed the subtotal.
+            models.CheckConstraint(
+                check=Q(total_after_discount__gte=0),
+                name="ck_cart_total_after_discount_nonneg",
             ),
             # Belt-and-suspenders status guard in addition to TextChoices.
             # String literals used here because Status is an inner class and
