@@ -60,6 +60,7 @@ from django.db.models.functions import Coalesce
 
 from apps.cart.models import Cart, CartItem
 from apps.catalog.models import Product
+from apps.core.cache import schedule_cart_cache_invalidation
 
 # TYPE_CHECKING guards avoid circular imports at runtime; the models are used
 # only in type annotations so this is safe.
@@ -183,6 +184,7 @@ def set_cart_address(cart: Cart, address: "Address") -> Cart:
     locked.version = F("version") + 1
     locked.save(update_fields=["selected_address", "version", "updated_at"])
     locked.refresh_from_db(fields=["selected_address_id", "version"])
+    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
     return locked
 
 
@@ -206,6 +208,7 @@ def set_cart_payment_method(cart: Cart, payment_method: "PaymentMethod") -> Cart
     locked.version = F("version") + 1
     locked.save(update_fields=["selected_payment_method", "version", "updated_at"])
     locked.refresh_from_db(fields=["selected_payment_method_id", "version"])
+    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
     return locked
 
 
@@ -261,7 +264,9 @@ def add_product_to_cart(cart: Cart, product: Product, quantity: int) -> Cart:
         item.save(update_fields=["quantity", "updated_at"])
         item.refresh_from_db(fields=["quantity"])
 
-    return recalculate_cart(locked)
+    result = recalculate_cart(locked)
+    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    return result
 
 
 @transaction.atomic
@@ -283,7 +288,9 @@ def remove_product_from_cart(cart: Cart, product_id: UUID) -> Cart:
     """
     locked = Cart.objects.select_for_update().get(pk=cart.pk)
     CartItem.objects.filter(cart=locked, product_id=product_id).delete()
-    return recalculate_cart(locked)
+    result = recalculate_cart(locked)
+    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    return result
 
 
 def recalculate_cart(cart: Cart) -> Cart:

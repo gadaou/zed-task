@@ -65,6 +65,7 @@ from django.db.models import F
 
 from apps.cart.models import Cart, CartItem
 from apps.catalog.models import Product
+from apps.core.cache import schedule_cart_cache_invalidation
 from apps.core.idempotency import AcquireOutcome, IdempotencyManager
 from apps.core.locks import redis_lock
 from apps.core.models import IdempotencyRecord
@@ -376,6 +377,13 @@ class CheckoutService:
             raise CartStaleVersion(
                 f"cart {cart_id} version={cart.version} changed mid-checkout"
             )
+
+        # Schedule cache invalidation after commit so:
+        # - A successful COMMIT purges the stale ACTIVE cart cache entry;
+        #   the next GET /cart transparently creates/reuses a fresh ACTIVE cart.
+        # - A ROLLBACK leaves the on_commit hook un-invoked, keeping the
+        #   cached ACTIVE cart intact (the mutation never happened).
+        schedule_cart_cache_invalidation(tenant_id, cart.user_id)
 
         # ------------------------------------------------------------------
         # Step 11 — Create Payment in REQUIRES_CONFIRMATION.

@@ -76,6 +76,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from apps.cart.models import Cart
+from apps.core.cache import schedule_cart_cache_invalidation
 from apps.coupon.exceptions import (
     CouponAlreadyApplied,
     CouponDomainError,
@@ -238,7 +239,9 @@ class CouponService:
         # caller sees ``CouponLimitReached``.
         self._atomic_increment_used_count(coupon)
 
-        return recalculate_cart(locked_cart)
+        result = recalculate_cart(locked_cart)
+        schedule_cart_cache_invalidation(locked_cart.tenant_id, locked_cart.user_id)
+        return result
 
     # ------------------------------------------------------------------
     # Remove
@@ -287,7 +290,9 @@ class CouponService:
             ).update(used_count=F("used_count") - 1)
             cart_coupon.delete()
 
-        return recalculate_cart(locked_cart)
+        result = recalculate_cart(locked_cart)
+        schedule_cart_cache_invalidation(locked_cart.tenant_id, locked_cart.user_id)
+        return result
 
     # ------------------------------------------------------------------
     # Revalidate (the hook CheckoutService will call)

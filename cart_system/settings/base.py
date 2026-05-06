@@ -43,6 +43,8 @@ env = environ.Env(
     CHECKOUT_LOCK_TTL_MS=(int, 15000),
     IDEMPOTENCY_INPROGRESS_TTL_S=(int, 60),
     IDEMPOTENCY_RECORD_TTL_HOURS=(int, 24),
+    CART_CACHE_TTL_S=(int, 60),
+    CART_CACHE_ENABLED=(bool, True),
 )
 
 # Load ``.env`` if present. In production the env vars are injected by the
@@ -458,6 +460,19 @@ IDEMPOTENCY_INPROGRESS_TTL_S: int = env("IDEMPOTENCY_INPROGRESS_TTL_S")
 # How long durable IdempotencyRecord DB rows are kept before the sweep job
 # deletes them (hours).  PROJECT_SPEC §4.5 mandates 24h.
 IDEMPOTENCY_RECORD_TTL_HOURS: int = env("IDEMPOTENCY_RECORD_TTL_HOURS")
+
+# ---------------------------------------------------------------------------
+# Cart read cache (PROJECT_SPEC §5.2 — hot-path caching)
+# ---------------------------------------------------------------------------
+
+# TTL for the cart read-response cache entries (seconds).  Default 60s is a
+# belt-and-suspenders safety net; explicit DEL on every mutation means the
+# effective staleness is normally 0.
+CART_CACHE_TTL_S: int = env("CART_CACHE_TTL_S")
+
+# Master kill-switch. Set to False via env var to bypass the cache entirely
+# without a code change — useful for emergencies or debugging stale-data issues.
+CART_CACHE_ENABLED: bool = env("CART_CACHE_ENABLED")
 
 # ---------------------------------------------------------------------------
 # Logging — structured JSON logs with bound context (PROJECT_SPEC §6.3)

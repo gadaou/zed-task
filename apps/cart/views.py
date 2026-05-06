@@ -40,6 +40,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.addresses.services import add_address
+from apps.core.cache import get_cart_cache, set_cart_cache
 from apps.cart.serializers import (
     AddAddressSerializer,
     AddPaymentMethodSerializer,
@@ -192,8 +193,19 @@ class CartReadView(APIView):
         if err:
             return err
 
+        from apps.tenant.context import get_current_tenant
+
+        tenant = get_current_tenant()
+        if tenant is not None:
+            cached = get_cart_cache(tenant.id, user_id)
+            if cached is not None:
+                return Response(cached, status=200)
+
         cart = get_or_create_active_cart(user_id)
-        return _cart_response(cart)
+        data = CartReadSerializer(cart).data
+        if tenant is not None:
+            set_cart_cache(tenant.id, user_id, data)
+        return Response(data, status=200)
 
 
 class AddProductView(APIView):
