@@ -109,9 +109,12 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    # TenantMiddleware runs immediately after SecurityMiddleware so every
-    # downstream middleware and view already has request.tenant populated.
-    # PROJECT_SPEC §4.2.
+    # RequestIdMiddleware runs immediately after SecurityMiddleware so every
+    # subsequent middleware, view, and service layer log line carries the
+    # X-Request-Id correlation id (generated or preserved from the client).
+    "apps.core.middleware.RequestIdMiddleware",
+    # TenantMiddleware runs next so every downstream middleware and view
+    # already has request.tenant populated. PROJECT_SPEC §4.2.
     "apps.tenant.middleware.TenantMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -475,24 +478,43 @@ CART_CACHE_TTL_S: int = env("CART_CACHE_TTL_S")
 CART_CACHE_ENABLED: bool = env("CART_CACHE_ENABLED")
 
 # ---------------------------------------------------------------------------
-# Logging — structured JSON logs with bound context (PROJECT_SPEC §6.3)
+# Logging — structured logs with per-request context (PROJECT_SPEC §6.3)
 # ---------------------------------------------------------------------------
-# A full structlog pipeline lands with apps.core. For now we ship a sane
-# console logger that production can override.
+# ``RequestContextFilter`` injects request_id / tenant_id / user_id onto
+# every log record from the ContextVars set by RequestIdMiddleware and
+# TenantMiddleware.
+#
+# Two formatters are registered:
+#   "verbose_text" — human-readable for dev/test (default here in base.py)
+#   "json"         — compact JSON for production (overridden in prod.py)
+#
+# Service code attaches extra fields via:
+#   logger.info("action name", extra={"action": "...", "duration_ms": 42})
+# or the short-hand:
+#   from apps.core.logging import log_event
+#   log_event(logger, "checkout.completed", duration_ms=elapsed)
 
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "request_context": {
+            "()": "apps.core.logging.RequestContextFilter",
+        },
+    },
     "formatters": {
-        "verbose": {
-            "format": "[{asctime}] {levelname} {name} {message}",
-            "style": "{",
+        "verbose_text": {
+            "()": "apps.core.logging.VerboseTextFormatter",
+        },
+        "json": {
+            "()": "apps.core.logging.JsonFormatter",
         },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "verbose_text",
+            "filters": ["request_context"],
         },
     },
     "root": {
@@ -503,6 +525,11 @@ LOGGING = {
         "django": {
             "handlers": ["console"],
             "level": env("DJANGO_DJANGO_LOG_LEVEL", default="INFO"),
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "WARNING",
             "propagate": False,
         },
     },

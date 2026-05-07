@@ -54,6 +54,7 @@ Injected collaborators (all overridable in tests):
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Callable
 from uuid import UUID
@@ -68,6 +69,8 @@ from apps.catalog.models import Product
 from apps.core.cache import schedule_cart_cache_invalidation
 from apps.core.idempotency import AcquireOutcome, IdempotencyManager
 from apps.core.locks import redis_lock
+from apps.core.logging import log_event
+from apps.core.metrics import incr
 from apps.core.models import IdempotencyRecord
 from apps.coupon.services import CouponService
 from apps.order.exceptions import (
@@ -190,6 +193,14 @@ class CheckoutService:
         tenant = get_current_tenant()
         tenant_id: UUID = tenant.id
 
+        t0 = time.monotonic()
+        log_event(
+            logger,
+            "checkout.started",
+            cart_id=str(cart_id),
+            tenant_id=str(tenant_id),
+        )
+
         # ------------------------------------------------------------------
         # Step 1 — Idempotency check (outside lock, outside DB transaction).
         # ------------------------------------------------------------------
@@ -200,10 +211,13 @@ class CheckoutService:
         )
         if acquire_result.outcome == AcquireOutcome.REPLAY:
             record = acquire_result.record
-            logger.info(
-                "checkout: idempotency replay for key=%s tenant=%s",
-                idempotency_key,
-                tenant_id,
+            log_event(
+                logger,
+                "checkout.completed",
+                outcome="replay",
+                cart_id=str(cart_id),
+                tenant_id=str(tenant_id),
+                duration_ms=round((time.monotonic() - t0) * 1000),
             )
             return self._result_from_record(record)
 
@@ -221,21 +235,58 @@ class CheckoutService:
             # Step 3 — Acquire distributed lock.
             # LockNotAcquired surfaces as cart/locked to the client.
             # --------------------------------------------------------------
-            with redis_lock(lock_key, self._lock_ttl_ms, client=self._redis_client):
-                result = self._run_checkout_transaction(
-                    cart_id=cart_id,
-                    payment_method_id=payment_method_id,
-                    address_id=address_id,
-                    idempotency_key=idempotency_key,
-                    request_hash=request_hash,
-                    tenant_id=tenant_id,
+            from apps.core.exceptions import LockNotAcquired as _LockNotAcquired
+
+            try:
+                with redis_lock(lock_key, self._lock_ttl_ms, client=self._redis_client):
+                    result = self._run_checkout_transaction(
+                        cart_id=cart_id,
+                        payment_method_id=payment_method_id,
+                        address_id=address_id,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        tenant_id=tenant_id,
+                    )
+            except _LockNotAcquired:
+                log_event(
+                    logger,
+                    "checkout.lock_failed",
+                    level=logging.WARNING,
+                    cart_id=str(cart_id),
+                    tenant_id=str(tenant_id),
+                    lock_key=lock_key,
+                    duration_ms=round((time.monotonic() - t0) * 1000),
                 )
+                incr("checkout.lock_contention", tenant_id=str(tenant_id))
+                raise
+            except Exception as exc:
+                log_event(
+                    logger,
+                    "checkout.failed",
+                    level=logging.ERROR,
+                    cart_id=str(cart_id),
+                    tenant_id=str(tenant_id),
+                    reason=type(exc).__name__,
+                    duration_ms=round((time.monotonic() - t0) * 1000),
+                )
+                incr("checkout.failed", reason=type(exc).__name__, tenant_id=str(tenant_id))
+                raise
         finally:
             # Always clear the in-progress sentinel so the client can retry
             # on transient failures.  Done after the lock is released so a
             # late retry can't sneak in before the transaction is committed.
             self._idempotency_manager.clear_in_progress(tenant_id, idempotency_key)
 
+        log_event(
+            logger,
+            "checkout.completed",
+            outcome="success",
+            cart_id=str(cart_id),
+            tenant_id=str(tenant_id),
+            order_id=str(result.order_id),
+            payment_id=str(result.payment_id),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -427,12 +478,13 @@ class CheckoutService:
 
         transaction.on_commit(_dispatch)
 
-        logger.info(
-            "checkout: order=%s payment=%s cart=%s tenant=%s",
-            order.id,
-            payment.id,
-            cart_id,
-            tenant_id,
+        log_event(
+            logger,
+            "checkout.transaction_committed",
+            order_id=str(order.id),
+            payment_id=str(payment.id),
+            cart_id=str(cart_id),
+            tenant_id=str(tenant_id),
         )
 
         return CheckoutResult(

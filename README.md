@@ -392,6 +392,73 @@ DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 
 ---
 
+## 13) Observability
+
+cart_system ships production-oriented observability foundations out of the box, with no vendor lock-in. Full details are in [`docs/observability.md`](docs/observability.md).
+
+### Request Correlation
+
+Every HTTP request carries an `X-Request-Id` correlation header:
+
+- If the client sends `X-Request-Id`, it is preserved and echoed back.
+- If absent, a UUID4 hex string is generated.
+- The id is bound into a `ContextVar` (`apps.core.context`) so **every log record emitted during that request** — in middleware, service layer, signal handlers — automatically carries `request_id` without any explicit argument passing.
+
+```
+X-Request-Id: 7b2e9c41a3d14e8d4b0ebeed5f3a2c87
+```
+
+### Structured Logs
+
+**Development** (human-readable):
+```
+[2026-05-07 02:30:00] INFO     apps.order.services req=7b2e9c41 tenant=aaa user=111 checkout.completed outcome=success cart_id=ccc duration_ms=87
+```
+
+**Production** (JSON, active in `prod.py`):
+```json
+{"ts":"2026-05-07T02:30:00.123","level":"INFO","logger":"apps.order.services","msg":"checkout.completed","request_id":"7b2e9c41...","tenant_id":"aaa...","action":"checkout.completed","outcome":"success","cart_id":"ccc...","duration_ms":87}
+```
+
+Key fields always present: `request_id`, `tenant_id`, `user_id`. Service-layer fields: `action`, `outcome`, `duration_ms`, `cart_id`, `order_id`, `payment_id`, `invoice_id`, `reason`.
+
+### Lifecycle Events Logged
+
+| Domain | Events |
+|---|---|
+| Checkout | `checkout.started`, `checkout.completed`, `checkout.failed`, `checkout.lock_failed` |
+| Payment | `payment.authorize_started`, `payment.authorized`, `payment.declined`, `payment.timeout` |
+| Idempotency | `idempotency.replay`, `idempotency.conflict`, `idempotency.in_progress` |
+| Cart | `cart.add_product`, `cart.remove_product`, `cart.set_address`, `cart.set_payment_method` |
+| Invoice | `invoice.generated`, `invoice.failed`, `invoice.pdf_retry` |
+| Readiness | `readiness.dependency_failed` (with `component=postgres|redis`) |
+
+### In-App Metric Hooks
+
+`apps.core.metrics.incr(name, **labels)` emits metric events as structured log records. No Prometheus/Datadog client is required — the log stream is the metric source. Swap `incr()` for a real counter client in production without changing any call site.
+
+Metrics emitted: `checkout.failed`, `checkout.lock_contention`, `payment.authorized`, `payment.declined`, `payment.timeout`, `idempotency.replay`, `idempotency.conflict`, `idempotency.in_progress`, `readiness.dependency_failed`, `invoice.failed`.
+
+### Recommended Production Metrics to Track
+
+- **Checkout latency p50/p95/p99** — `duration_ms` on `checkout.completed`
+- **Checkout failure rate by reason** — `checkout.failed` count grouped by `reason`
+- **Payment authorization success/failure/timeout rate**
+- **Redis lock contention rate** — `checkout.lock_contention` / `checkout.started`
+- **Idempotency replay/conflict rate**
+- **Cart cache hit/miss rate**
+- **Invoice generation success/failure rate**
+- **DB query latency** — from `pg_stat_statements` or APM
+- **Celery queue depth** and **task retry rate** for `payments` and `invoices` queues
+
+### Plugging into Datadog / Prometheus / OpenTelemetry Later
+
+- **Datadog**: configure the Datadog agent to ingest stdout JSON logs; create facets on `action`, `request_id`, `tenant_id`, `duration_ms`. No code changes needed.
+- **Prometheus**: replace `apps/core/metrics.py::incr` with `prometheus_client.Counter.labels(...).inc()`. Mount a `/metrics` endpoint.
+- **OpenTelemetry**: add `opentelemetry-instrumentation-django` and place the OTel middleware before `RequestIdMiddleware`. Forward `trace_id` as `X-Request-Id` or log both fields for cross-signal correlation.
+
+---
+
 ## 13) Trade-offs
 
 Key architectural trade-offs are intentional and documented here for reviewers.

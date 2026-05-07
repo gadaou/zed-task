@@ -30,6 +30,9 @@ from uuid import UUID
 
 from celery import shared_task
 
+from apps.core.logging import log_event
+from apps.core.metrics import incr
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,11 +85,12 @@ def generate_invoice(self, order_id: str) -> dict:
     with tenant_context(order.tenant):
         try:
             invoice = InvoiceService().generate_invoice_for_order(order_uuid)
-            logger.info(
-                "generate_invoice: invoice #%s (%s) generated for order %s",
-                invoice.number,
-                invoice.id,
-                order_id,
+            log_event(
+                logger,
+                "invoice.task_completed",
+                outcome="success",
+                order_id=order_id,
+                invoice_id=str(invoice.id),
             )
             return {
                 "order_id": order_id,
@@ -95,11 +99,15 @@ def generate_invoice(self, order_id: str) -> dict:
                 "status": "generated",
             }
         except Exception as exc:
-            logger.error(
-                "generate_invoice: failed for order %s: %s",
-                order_id,
-                exc,
+            log_event(
+                logger,
+                "invoice.failed",
+                level=logging.ERROR,
+                outcome="failed",
+                order_id=order_id,
+                reason=type(exc).__name__,
             )
+            incr("invoice.failed", reason=type(exc).__name__)
             raise self.retry(exc=exc)
 
 

@@ -46,6 +46,7 @@ from uuid import UUID
 import redis
 
 from apps.core.exceptions import IdempotencyConflict, IdempotencyInProgress
+from apps.core.metrics import incr
 from apps.core.models import IdempotencyRecord
 
 logger = logging.getLogger(__name__)
@@ -155,10 +156,28 @@ class IdempotencyManager:
                 tenant_id=tenant_id, key=key
             )
             if record.request_hash != request_hash:
+                logger.warning(
+                    "idempotency.conflict",
+                    extra={
+                        "action": "idempotency.conflict",
+                        "key": str(key),
+                        "tenant_id": str(tenant_id),
+                    },
+                )
+                incr("idempotency.conflict", tenant_id=str(tenant_id))
                 raise IdempotencyConflict(
                     f"idempotency key {key} was used with a different request payload"
                 )
             if record.status == IdempotencyRecord.Status.SUCCEEDED:
+                logger.info(
+                    "idempotency.replay",
+                    extra={
+                        "action": "idempotency.replay",
+                        "key": str(key),
+                        "tenant_id": str(tenant_id),
+                    },
+                )
+                incr("idempotency.replay", tenant_id=str(tenant_id))
                 return AcquireResult(outcome=AcquireOutcome.REPLAY, record=record)
             # status == IN_PROGRESS (rare — record committed but sentinel
             # already expired), fall through to the Redis check below.
@@ -168,6 +187,15 @@ class IdempotencyManager:
         # 2. Check the Redis in-progress sentinel.
         value = self._client.get(redis_key)
         if value is not None:
+            logger.info(
+                "idempotency.in_progress",
+                extra={
+                    "action": "idempotency.in_progress",
+                    "key": str(key),
+                    "tenant_id": str(tenant_id),
+                },
+            )
+            incr("idempotency.in_progress", tenant_id=str(tenant_id))
             raise IdempotencyInProgress(
                 f"idempotency key {key} is already being processed"
             )

@@ -65,6 +65,7 @@ from uuid import UUID
 
 from django.db import IntegrityError, transaction
 
+from apps.core.logging import log_event
 from apps.invoice.exceptions import OrderNotFound, OrderNotPaid
 
 logger = logging.getLogger(__name__)
@@ -107,19 +108,23 @@ class InvoiceService:
         if invoice is not None:
             if invoice.pdf_url:
                 # Fully generated on a previous call — fast path return.
-                logger.info(
-                    "InvoiceService: invoice %s for order %s already complete — skipping.",
-                    invoice.id,
-                    order_id,
+                log_event(
+                    logger,
+                    "invoice.generated",
+                    outcome="skipped",
+                    invoice_id=str(invoice.id),
+                    order_id=str(order_id),
+                    reason="already_complete",
                 )
                 return invoice
 
             # pdf_url is empty: DB row was committed but PDF rendering failed.
             # Load the order for rendering context and jump to step 4.
-            logger.info(
-                "InvoiceService: invoice %s for order %s has empty pdf_url — retrying PDF.",
-                invoice.id,
-                order_id,
+            log_event(
+                logger,
+                "invoice.pdf_retry",
+                invoice_id=str(invoice.id),
+                order_id=str(order_id),
             )
             order = (
                 Order.objects.all_tenants()
@@ -152,10 +157,11 @@ class InvoiceService:
                 invoice = self._create_invoice_row_atomic(order)
             except IntegrityError:
                 # A concurrent task raced past step 1 and won the INSERT.
-                logger.info(
-                    "InvoiceService: IntegrityError for order %s — "
-                    "concurrent task already created the row; fetching.",
-                    order_id,
+                log_event(
+                    logger,
+                    "invoice.concurrent_insert",
+                    order_id=str(order_id),
+                    reason="IntegrityError",
                 )
                 invoice = Invoice.objects.get(order_id=order_id)
                 if invoice.pdf_url:
@@ -184,12 +190,12 @@ class InvoiceService:
         Invoice.objects.filter(pk=invoice.pk, pdf_url="").update(pdf_url=pdf_url)
         invoice.refresh_from_db()
 
-        logger.info(
-            "InvoiceService: invoice #%s (%s) fully generated for order %s tenant=%s",
-            invoice.number,
-            invoice.id,
-            order_id,
-            order.tenant_id,
+        log_event(
+            logger,
+            "invoice.generated",
+            outcome="success",
+            invoice_id=str(invoice.id),
+            order_id=str(order_id),
         )
         return invoice
 

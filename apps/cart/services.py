@@ -51,6 +51,8 @@ instead of silently overwriting a concurrent change.
 
 from __future__ import annotations
 
+import logging
+import time
 from decimal import Decimal
 from uuid import UUID
 
@@ -61,6 +63,7 @@ from django.db.models.functions import Coalesce
 from apps.cart.models import Cart, CartItem
 from apps.catalog.models import Product
 from apps.core.cache import schedule_cart_cache_invalidation
+from apps.core.logging import log_event
 
 # TYPE_CHECKING guards avoid circular imports at runtime; the models are used
 # only in type annotations so this is safe.
@@ -69,6 +72,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from apps.addresses.models import Address
     from apps.payment.models import PaymentMethod
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_active_cart(user_id: UUID) -> Cart:
@@ -179,12 +184,31 @@ def set_cart_address(cart: Cart, address: "Address") -> Cart:
         The same Cart instance with ``selected_address`` and ``version``
         refreshed from the database.
     """
-    locked = Cart.objects.select_for_update().get(pk=cart.pk)
-    locked.selected_address = address
-    locked.version = F("version") + 1
-    locked.save(update_fields=["selected_address", "version", "updated_at"])
-    locked.refresh_from_db(fields=["selected_address_id", "version"])
-    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    t0 = time.monotonic()
+    try:
+        locked = Cart.objects.select_for_update().get(pk=cart.pk)
+        locked.selected_address = address
+        locked.version = F("version") + 1
+        locked.save(update_fields=["selected_address", "version", "updated_at"])
+        locked.refresh_from_db(fields=["selected_address_id", "version"])
+        schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    except Exception:
+        log_event(
+            logger,
+            "cart.set_address",
+            level=logging.ERROR,
+            outcome="failed",
+            cart_id=str(cart.pk),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        raise
+    log_event(
+        logger,
+        "cart.set_address",
+        outcome="success",
+        cart_id=str(cart.pk),
+        duration_ms=round((time.monotonic() - t0) * 1000),
+    )
     return locked
 
 
@@ -203,12 +227,31 @@ def set_cart_payment_method(cart: Cart, payment_method: "PaymentMethod") -> Cart
         The same Cart instance with ``selected_payment_method`` and ``version``
         refreshed from the database.
     """
-    locked = Cart.objects.select_for_update().get(pk=cart.pk)
-    locked.selected_payment_method = payment_method
-    locked.version = F("version") + 1
-    locked.save(update_fields=["selected_payment_method", "version", "updated_at"])
-    locked.refresh_from_db(fields=["selected_payment_method_id", "version"])
-    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    t0 = time.monotonic()
+    try:
+        locked = Cart.objects.select_for_update().get(pk=cart.pk)
+        locked.selected_payment_method = payment_method
+        locked.version = F("version") + 1
+        locked.save(update_fields=["selected_payment_method", "version", "updated_at"])
+        locked.refresh_from_db(fields=["selected_payment_method_id", "version"])
+        schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    except Exception:
+        log_event(
+            logger,
+            "cart.set_payment_method",
+            level=logging.ERROR,
+            outcome="failed",
+            cart_id=str(cart.pk),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        raise
+    log_event(
+        logger,
+        "cart.set_payment_method",
+        outcome="success",
+        cart_id=str(cart.pk),
+        duration_ms=round((time.monotonic() - t0) * 1000),
+    )
     return locked
 
 
@@ -245,27 +288,46 @@ def add_product_to_cart(cart: Cart, product: Product, quantity: int) -> Cart:
     if quantity < 1:
         raise ValueError("quantity must be >= 1")
 
-    locked = Cart.objects.select_for_update().get(pk=cart.pk)
+    t0 = time.monotonic()
+    try:
+        locked = Cart.objects.select_for_update().get(pk=cart.pk)
 
-    item, created = CartItem.objects.get_or_create(
-        cart=locked,
-        product_id=product.id,
-        defaults={
-            "quantity": quantity,
-            "price_snapshot": product.price,
-            "currency": product.currency,
-        },
+        item, created = CartItem.objects.get_or_create(
+            cart=locked,
+            product_id=product.id,
+            defaults={
+                "quantity": quantity,
+                "price_snapshot": product.price,
+                "currency": product.currency,
+            },
+        )
+        if not created:
+            # F() expression so the increment is computed in SQL — avoids the
+            # classic read-modify-write race even though we already hold the
+            # cart row lock (defense in depth).
+            item.quantity = F("quantity") + quantity
+            item.save(update_fields=["quantity", "updated_at"])
+            item.refresh_from_db(fields=["quantity"])
+
+        result = recalculate_cart(locked)
+        schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    except Exception:
+        log_event(
+            logger,
+            "cart.add_product",
+            level=logging.ERROR,
+            outcome="failed",
+            cart_id=str(cart.pk),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        raise
+    log_event(
+        logger,
+        "cart.add_product",
+        outcome="success",
+        cart_id=str(cart.pk),
+        duration_ms=round((time.monotonic() - t0) * 1000),
     )
-    if not created:
-        # F() expression so the increment is computed in SQL — avoids the
-        # classic read-modify-write race even though we already hold the
-        # cart row lock (defense in depth).
-        item.quantity = F("quantity") + quantity
-        item.save(update_fields=["quantity", "updated_at"])
-        item.refresh_from_db(fields=["quantity"])
-
-    result = recalculate_cart(locked)
-    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
     return result
 
 
@@ -286,10 +348,29 @@ def remove_product_from_cart(cart: Cart, product_id: UUID) -> Cart:
         The same Cart instance with ``total_price`` and ``version``
         refreshed from the database.
     """
-    locked = Cart.objects.select_for_update().get(pk=cart.pk)
-    CartItem.objects.filter(cart=locked, product_id=product_id).delete()
-    result = recalculate_cart(locked)
-    schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    t0 = time.monotonic()
+    try:
+        locked = Cart.objects.select_for_update().get(pk=cart.pk)
+        CartItem.objects.filter(cart=locked, product_id=product_id).delete()
+        result = recalculate_cart(locked)
+        schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    except Exception:
+        log_event(
+            logger,
+            "cart.remove_product",
+            level=logging.ERROR,
+            outcome="failed",
+            cart_id=str(cart.pk),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        raise
+    log_event(
+        logger,
+        "cart.remove_product",
+        outcome="success",
+        cart_id=str(cart.pk),
+        duration_ms=round((time.monotonic() - t0) * 1000),
+    )
     return result
 
 

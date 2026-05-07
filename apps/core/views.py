@@ -13,6 +13,8 @@ Compatibility aliases are kept in ``apps/core/urls.py``:
 
 from __future__ import annotations
 
+import logging
+
 from django.db import connections
 from django.db.utils import Error as DatabaseError
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -21,7 +23,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.core.metrics import incr
 from apps.core.redis import get_redis_client
+
+logger = logging.getLogger(__name__)
 
 
 def _check_postgres() -> tuple[bool, str]:
@@ -131,6 +136,28 @@ def ready(_request: Request) -> Response:
         "redis": "ok" if redis_ok else redis_detail,
     }
     all_ok = db_ok and redis_ok
+
+    if not db_ok:
+        logger.error(
+            "readiness.dependency_failed",
+            extra={
+                "action": "readiness.dependency_failed",
+                "component": "postgres",
+                "detail": db_detail,
+            },
+        )
+        incr("readiness.dependency_failed", component="postgres")
+
+    if not redis_ok:
+        logger.error(
+            "readiness.dependency_failed",
+            extra={
+                "action": "readiness.dependency_failed",
+                "component": "redis",
+                "detail": redis_detail,
+            },
+        )
+        incr("readiness.dependency_failed", component="redis")
 
     return Response(
         {

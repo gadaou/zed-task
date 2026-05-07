@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 
@@ -59,3 +61,33 @@ def test_schema_includes_health_and_ready_endpoints(client):
     schema_text = response.content.decode("utf-8")
     assert "/health/:" in schema_text
     assert "/ready/:" in schema_text
+
+
+@pytest.mark.django_db
+def test_ready_logs_dependency_failure_with_request_id(client, caplog, monkeypatch):
+    """When Redis fails, an ERROR log is emitted with action=readiness.dependency_failed.
+
+    The log record must also carry a non-empty request_id so the failure is
+    traceable back to the specific probe invocation in a log aggregation tool.
+    """
+    monkeypatch.setattr("apps.core.views.get_redis_client", lambda: _RedisFailing())
+
+    custom_rid = "readiness-trace-99"
+    with caplog.at_level(logging.ERROR, logger="apps.core.views"):
+        response = client.get("/ready/", HTTP_X_REQUEST_ID=custom_rid)
+
+    assert response.status_code == 503
+
+    failure_records = [
+        r for r in caplog.records
+        if getattr(r, "action", None) == "readiness.dependency_failed"
+    ]
+    assert failure_records, (
+        "Expected at least one ERROR log with action='readiness.dependency_failed'"
+    )
+    for record in failure_records:
+        assert record.levelno == logging.ERROR
+        request_id = getattr(record, "request_id", None)
+        assert request_id and request_id != "-", (
+            f"request_id must be bound on readiness failure records, got {request_id!r}"
+        )

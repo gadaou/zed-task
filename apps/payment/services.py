@@ -54,6 +54,8 @@ from uuid import UUID
 from django.db import transaction
 from django.db.models import F
 
+from apps.core.logging import log_event
+from apps.core.metrics import incr
 from apps.invoice.tasks import enqueue_generate_invoice
 from apps.payment.exceptions import (
     GatewayDeclined,
@@ -132,10 +134,13 @@ class PaymentService:
         payment = self._load(payment_id)
 
         if payment.status in _ALREADY_AUTHORIZED | _TERMINAL_FAILURE:
-            logger.info(
-                "PaymentService.authorize_payment: payment %s already in %s — idempotent skip.",
-                payment_id,
-                payment.status,
+            log_event(
+                logger,
+                "payment.authorized",
+                outcome="skipped",
+                payment_id=str(payment_id),
+                provider=payment.provider,
+                reason=f"already_in_{payment.status}",
             )
             return payment
 
@@ -159,17 +164,31 @@ class PaymentService:
             # require it should raise GatewayUnavailable from within the gateway.
             payment_method = None
 
-        logger.info(
-            "PaymentService.authorize_payment: calling gateway '%s' for payment %s amount=%s%s",
-            payment.provider,
-            payment_id,
-            payment.amount,
-            payment.currency,
+        log_event(
+            logger,
+            "payment.authorize_started",
+            payment_id=str(payment_id),
+            provider=payment.provider,
+            order_id=str(order.id),
         )
 
         # Gateway call — GatewayTimeout / GatewayUnavailable propagate to the
-        # caller (Celery task) without mutating the row.
-        result = gateway.authorize_payment(order, payment_method)
+        # caller (Celery task) without mutating the row.  We wrap the call to
+        # emit a specific log line for transient failures before re-raising
+        # so the Celery task's autoretry_for picks them up as usual.
+        try:
+            result = gateway.authorize_payment(order, payment_method)
+        except (GatewayTimeout, GatewayUnavailable) as exc:
+            log_event(
+                logger,
+                "payment.timeout",
+                level=logging.WARNING,
+                payment_id=str(payment_id),
+                provider=payment.provider,
+                reason=type(exc).__name__,
+            )
+            incr("payment.timeout", provider=payment.provider)
+            raise
 
         if result.success:
             with transaction.atomic():
@@ -207,7 +226,15 @@ class PaymentService:
                 transaction.on_commit(_dispatch_invoice)
 
             payment.refresh_from_db()
-            logger.info("PaymentService.authorize_payment: payment %s → AUTHORIZED", payment_id)
+            log_event(
+                logger,
+                "payment.authorized",
+                outcome="success",
+                payment_id=str(payment_id),
+                provider=payment.provider,
+                order_id=str(order.id),
+            )
+            incr("payment.authorized", provider=payment.provider)
         else:
             with transaction.atomic():
                 Payment.objects.filter(
@@ -230,11 +257,17 @@ class PaymentService:
                 )
 
             payment.refresh_from_db()
-            logger.info(
-                "PaymentService.authorize_payment: payment %s → FAILED (%s)",
-                payment_id,
-                result.error_code,
+            log_event(
+                logger,
+                "payment.declined",
+                level=logging.WARNING,
+                outcome="declined",
+                payment_id=str(payment_id),
+                provider=payment.provider,
+                order_id=str(order.id),
+                reason=result.error_code,
             )
+            incr("payment.declined", provider=payment.provider, reason=result.error_code)
             raise GatewayDeclined(
                 error_code=result.error_code,
                 detail=result.error_message,

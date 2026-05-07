@@ -38,6 +38,16 @@ CSRF_COOKIE_HTTPONLY = True
 X_FRAME_OPTIONS = "DENY"
 
 # ---------------------------------------------------------------------------
+# Logging — JSON output for machine-readable log ingestion in production.
+# ---------------------------------------------------------------------------
+# Override only the console handler's formatter to "json" so every log line
+# is a single compact JSON object ready for Datadog / CloudWatch / Loki
+# without any parsing configuration.  The filter and root logger level are
+# inherited unchanged from base.py.
+
+LOGGING["handlers"]["console"]["formatter"] = "json"  # noqa: F405
+
+# ---------------------------------------------------------------------------
 # Static files
 # ---------------------------------------------------------------------------
 # The deployment is expected to serve ``STATIC_ROOT`` via a CDN or a frontend
