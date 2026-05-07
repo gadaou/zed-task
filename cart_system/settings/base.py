@@ -288,6 +288,14 @@ SPECTACULAR_SETTINGS = {
         "### Payment lifecycle\n\n"
         "`POST /carts/{cart_id}/checkout` → `202 Accepted` (payment pending) → "
         "async Celery task → gateway → `AUTHORIZED` or `FAILED`.\n\n"
+        "### Invoice generation\n\n"
+        "Once a payment transitions to `AUTHORIZED`, the Celery `invoices` worker "
+        "generates a PDF invoice for the order using a two-phase approach: the "
+        "`Invoice` row and per-tenant sequence number are committed atomically first; "
+        "the PDF is rendered outside the transaction. Generation is idempotent — "
+        "Celery redeliveries never allocate a second invoice number. Invoices are "
+        "accessible via the Django admin and the `MEDIA_ROOT/invoices/` path; "
+        "public REST retrieval endpoints are planned for a future iteration.\n\n"
         "### B2B metadata\n\n"
         "Cart endpoints accept optional B2B buyer fields — `company_name`, "
         "`tax_number`, and `purchase_order_reference` — via "
@@ -315,8 +323,11 @@ SPECTACULAR_SETTINGS = {
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]+",
     "COMPONENT_SPLIT_REQUEST": True,
 
-    # Enumerate all tags so they appear in sidebar order (not alphabetical).
-    # Each tag gets a description that surfaces in the SwaggerUI sidebar.
+    # Only tags that have at least one wired @extend_schema(tags=[...]) endpoint
+    # are listed here. Empty tags show up as orphaned sidebar entries in Swagger UI.
+    # Tags for features without public REST endpoints yet (Coupon, Payment, Catalog,
+    # Addresses, Tenant, Invoice) are omitted; their subsystems are described in
+    # DESCRIPTION above and in docs/architecture.md.
     "TAGS": [
         {
             "name": "Checkout",
@@ -332,42 +343,10 @@ SPECTACULAR_SETTINGS = {
             "name": "Cart",
             "description": (
                 "Manage the shopping cart — add items, remove items, apply/remove coupons, "
+                "set a shipping address, set a payment method, set B2B business details, "
                 "and inspect the current totals. Every cart is scoped to a single tenant "
                 "and customer (`user_id`). Cart state transitions: `ACTIVE → CHECKED_OUT`."
             ),
-        },
-        {
-            "name": "Coupon",
-            "description": (
-                "Manage discount coupons for a tenant. Coupons are either **percentage** "
-                "or **fixed-amount**. Constraints (minimum cart value, country allowlist, "
-                "usage limits, validity window) are evaluated at apply-time and re-validated "
-                "at checkout."
-            ),
-        },
-        {
-            "name": "Payment",
-            "description": (
-                "Inspect and manage payment records and stored payment methods. "
-                "Payment status follows the FSM: `REQUIRES_CONFIRMATION → AUTHORIZED → "
-                "CAPTURED → SUCCEEDED` (or `FAILED / CANCELLED / REFUNDED`)."
-            ),
-        },
-        {
-            "name": "Catalog",
-            "description": "Product catalog — prices, stock levels, and metadata.",
-        },
-        {
-            "name": "Addresses",
-            "description": (
-                "Manage customer shipping addresses. Soft-deleted addresses are retained "
-                "for order-history integrity. At most one address may be the default per "
-                "customer within a tenant."
-            ),
-        },
-        {
-            "name": "Tenant",
-            "description": "Tenant provisioning and management (ops/admin use only).",
         },
         {
             "name": "Health",
@@ -377,16 +356,6 @@ SPECTACULAR_SETTINGS = {
                 "dependencies are contacted. "
                 "`GET /ready/` verifies PostgreSQL and Redis connectivity and is "
                 "suitable for Kubernetes `readinessProbe`."
-            ),
-        },
-        {
-            "name": "Invoice",
-            "description": (
-                "PDF invoice generation and retrieval. Invoices are created "
-                "asynchronously by the Celery `invoices` worker once a payment "
-                "transitions to `AUTHORIZED`. "
-                "Public retrieval endpoints (`GET /invoices/{id}/`) land in a "
-                "future iteration."
             ),
         },
     ],

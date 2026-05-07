@@ -238,7 +238,6 @@ Full details: [`docs/observability.md`](docs/observability.md).
     ├── observability.md       ← structured logging, metrics, request correlation
     ├── payment-gateways.md    ← gateway interface, registration, adding real gateways
     ├── test-quality-summary.md← test counts, coverage, quality notes
-    ├── openapi.yaml
     └── diagrams/
         ├── system-architecture.md
         ├── checkout-sequence.md

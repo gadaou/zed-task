@@ -1,6 +1,6 @@
 # Test & Quality Summary
 
-`cart_system` ships **347 tests** across 26 files and 8 apps. This document shows the testing depth visually, explains how to run the suite, and explains why the concurrency and idempotency tests are non-negotiable for correctness.
+`cart_system` ships **347 test functions** (365 pytest nodes) across 26 files and 8 apps. This document shows the testing depth visually, explains how to run the suite, and explains why the concurrency and idempotency tests are non-negotiable for correctness.
 
 ---
 
@@ -9,11 +9,13 @@
 ```
 DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 
-347 collected
-342 passed, 5 skipped, 0 failed
+365 collected
+360 passed, 5 skipped, 0 failed
 ```
 
 The 5 skipped tests are intentional — see [Skipped Tests](#skipped-tests) below.
+
+> **Collected vs. defined:** 365 pytest nodes > 347 `def test_*` functions because `pytest.mark.parametrize` expands parametrized tests into multiple nodes. The pie charts below use the 347 `def test_*` count (one per function).
 
 > **Configuration:** SQLite in-memory database, `fakeredis` (monkeypatched per test), `CELERY_TASK_ALWAYS_EAGER=True` (tasks run synchronously). Tests that touch `SELECT FOR UPDATE` or `transaction.on_commit` use `@pytest.mark.django_db(transaction=True)`.
 

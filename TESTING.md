@@ -23,7 +23,7 @@ source .venv/bin/activate
 pytest -q
 ```
 
-Expected result: **≥ 327 passed, 5 skipped, 0 failures**. The 5 skips are intentional — the `PaymentGatewayContractTests` mixin calls `pytest.skip()` for conditions that are not applicable to a specific gateway implementation (e.g. "only applicable to failing gateways" is skipped for `DummySuccessGateway`).
+Expected result: **360 passed, 5 skipped, 0 failures** (365 nodes collected; delta vs. 347 `def test_*` functions is `pytest.mark.parametrize` expansion). The 5 skips are intentional — the `PaymentGatewayContractTests` mixin calls `pytest.skip()` for conditions that are not applicable to a specific gateway implementation (e.g. "only applicable to failing gateways" is skipped for `DummySuccessGateway`).
 
 ### Filter to a specific domain or test name
 
