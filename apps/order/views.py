@@ -49,6 +49,7 @@ from apps.core.openapi import (
 )
 from apps.core.responses import map_exception as _map_exception
 from apps.core.responses import problem as _problem
+from apps.core.responses import validation_problem as _validation_problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.order.exceptions import (
     AddressNotFound,
@@ -252,10 +253,7 @@ class CheckoutView(APIView):
         # ------------------------------------------------------------------
         serializer = CheckoutRequestSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return _validation_problem(serializer.errors)
 
         # ------------------------------------------------------------------
         # 1b. Enforce cart ownership when X-User-Id is present.

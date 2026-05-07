@@ -47,10 +47,22 @@ _DEFAULT_EXEMPT = [
     "/api/redoc/",
 ]
 
+_BASE_URI = "https://cart-system.local/problems"
+_TITLES: dict[str, str] = {
+    "tenant/missing-header": "X-Tenant-Domain header is required",
+    "tenant/not-found": "Tenant not found",
+    "tenant/disabled": "Tenant is disabled",
+}
+
 
 def _json_error(status: int, error_type: str, detail: str) -> HttpResponse:
-    body = json.dumps({"type": error_type, "detail": detail})
-    return HttpResponse(body, status=status, content_type="application/json")
+    body = json.dumps({
+        "type": f"{_BASE_URI}/{error_type}",
+        "title": _TITLES.get(error_type, "Tenant error"),
+        "status": status,
+        "detail": detail,
+    })
+    return HttpResponse(body, status=status, content_type="application/problem+json")
 
 
 def _is_exempt(path: str) -> bool:
@@ -92,12 +104,12 @@ class TenantMiddleware:
         except Tenant.DoesNotExist:
             logger.warning("tenant.not_found domain=%s", domain)
             exc = TenantNotFound(f"No tenant found for domain '{domain}'.")
-            return _json_error(exc.http_status, exc.error_type, exc.detail)
+            return _json_error(exc.http_status, exc.type, exc.detail)
 
         if not tenant.is_active:
             logger.warning("tenant.disabled tenant_id=%s domain=%s", tenant.id, domain)
             exc = TenantDisabled(f"Tenant '{domain}' is disabled.")
-            return _json_error(exc.http_status, exc.error_type, exc.detail)
+            return _json_error(exc.http_status, exc.type, exc.detail)
 
         request.tenant = tenant  # type: ignore[attr-defined]
         token = set_current_tenant(tenant)

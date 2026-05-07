@@ -210,9 +210,9 @@ class PaymentService:
                 # concurrent retries of this same task).
                 Order.objects.all_tenants().filter(
                     pk=order.pk,
-                    status="PENDING_PAYMENT",
+                    status=Order.Status.PENDING_PAYMENT,
                 ).update(
-                    status="PAID",
+                    status=Order.Status.PAID,
                     version=F("version") + 1,
                 )
 
@@ -250,9 +250,9 @@ class PaymentService:
                 # Flip Order.status to FAILED (status-guarded).
                 Order.objects.all_tenants().filter(
                     pk=order.pk,
-                    status="PENDING_PAYMENT",
+                    status=Order.Status.PENDING_PAYMENT,
                 ).update(
-                    status="FAILED",
+                    status=Order.Status.FAILED,
                     version=F("version") + 1,
                 )
 

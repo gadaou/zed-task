@@ -10,14 +10,24 @@ Public API
 ``problem(type_, title, status, detail, **extra) -> Response``
     Build a minimal RFC 7807 problem+json ``Response``.
 
+``validation_problem(errors) -> Response``
+    Build a RFC 7807 400 response for serializer validation failures,
+    embedding the field-level ``errors`` dict as an extra member.
+
 ``map_exception(exc) -> Response``
     Translate a domain exception into an RFC 7807 ``Response``.
     Re-raises anything it cannot map so Django's 500 handler catches it.
+    Logs unexpected exceptions at ERROR level (with ``request_id``) before
+    re-raising so the traceback is always correlatable.
 """
 
 from __future__ import annotations
 
+import logging
+
 from rest_framework.response import Response
+
+logger = logging.getLogger(__name__)
 
 from apps.core.exceptions import (
     IdempotencyConflict,
@@ -57,6 +67,22 @@ def problem(
     }
     body.update(extra)
     return Response(body, status=status, content_type="application/problem+json")
+
+
+def validation_problem(errors: dict) -> Response:
+    """Build a RFC 7807 400 response for serializer validation failures.
+
+    Embeds the DRF field-level ``errors`` dict as an extra member so clients
+    can pinpoint exactly which field(s) failed, while the outer envelope
+    remains a fully-compliant RFC 7807 problem+json body.
+    """
+    return problem(
+        "validation/invalid-input",
+        "Validation error",
+        400,
+        "The request body contains invalid data.",
+        errors=errors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -104,4 +130,8 @@ def map_exception(exc: Exception) -> Response:
     if isinstance(exc, OrderDomainError):
         return problem(exc.type, "Checkout error", 422, exc.detail)
 
+    logger.exception(
+        "error.unhandled",
+        extra={"action": "error.unhandled", "exc_type": type(exc).__name__},
+    )
     raise exc

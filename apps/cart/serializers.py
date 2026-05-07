@@ -13,7 +13,7 @@ Input serializers
 -----------------
 ``AddProductSerializer``        — POST /cart/add-product
 ``RemoveProductSerializer``     — POST /cart/remove-product
-``ApplyCouponSerializer``       — POST /cart/apply-coupon
+``ApplyCouponSerializer``       — POST /cart/add-coupon
 ``RemoveCouponSerializer``      — POST /cart/remove-coupon
 ``AddAddressSerializer``        — POST /cart/add-address
 ``AddPaymentMethodSerializer``  — POST /cart/add-payment-method
@@ -64,7 +64,7 @@ class RemoveProductSerializer(serializers.Serializer):
 
 
 class ApplyCouponSerializer(serializers.Serializer):
-    """Validate the body for ``POST /api/v1/cart/apply-coupon``."""
+    """Validate the body for ``POST /api/v1/cart/add-coupon``."""
 
     code = serializers.CharField(
         max_length=64,

@@ -144,7 +144,7 @@ class InvoiceService:
             except Order.DoesNotExist:
                 raise OrderNotFound(f"order {order_id} not found")
 
-            if order.status != "PAID":
+            if order.status != Order.Status.PAID:
                 raise OrderNotPaid(
                     f"order {order_id} is in status '{order.status}'; expected PAID"
                 )

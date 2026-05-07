@@ -18,7 +18,7 @@ class TenantError(Exception):
     """Base class for all tenant-related errors."""
 
     #: Short stable machine-readable code matching the §2 taxonomy.
-    error_type: str = "tenant/error"
+    type: str = "tenant/error"
     default_detail: str = "A tenant error occurred."
     http_status: int = 500
 
@@ -35,7 +35,7 @@ class TenantContextMissing(TenantError):
     Surfaces as a hard 500 so it is never silently swallowed.
     """
 
-    error_type = "tenant/context-missing"
+    type = "tenant/context-missing"
     default_detail = (
         "No tenant is set in the current execution context. "
         "Wrap the caller in tenant_context(tenant) or ensure TenantMiddleware runs."
@@ -46,7 +46,7 @@ class TenantContextMissing(TenantError):
 class TenantNotFound(TenantError):
     """Raised when a domain header value does not match any known tenant."""
 
-    error_type = "tenant/not-found"
+    type = "tenant/not-found"
     default_detail = "No tenant found for the supplied domain."
     http_status = 404
 
@@ -54,6 +54,6 @@ class TenantNotFound(TenantError):
 class TenantDisabled(TenantError):
     """Raised when the resolved tenant exists but is marked inactive."""
 
-    error_type = "tenant/disabled"
+    type = "tenant/disabled"
     default_detail = "This tenant is currently disabled."
     http_status = 403

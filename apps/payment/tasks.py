@@ -343,6 +343,13 @@ def process_payment(self, order_id: str) -> dict:
 def enqueue_process_payment(order_id: UUID) -> None:
     """Dispatch ``process_payment`` to the Celery ``payments`` queue.
 
+    This is an **alternative, order-keyed** entry-point for payment
+    authorisation.  It is NOT wired into the current checkout path —
+    ``CheckoutService`` dispatches ``enqueue_authorize_payment`` (the
+    payment-keyed entry-point) instead.  ``enqueue_process_payment`` is
+    available for ops tooling or future flows that have an ``order_id``
+    but not a ``payment_id`` at dispatch time.
+
     Wrapping the task dispatch in a named function keeps callers
     independent of Celery imports — tests can replace this with a no-op.
 

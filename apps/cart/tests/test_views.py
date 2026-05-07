@@ -778,3 +778,66 @@ def test_tenant_a_cannot_add_tenant_b_product(api_client):
     )
     assert resp.status_code == 404
     assert "product/not-found" in resp.json().get("type", "")
+
+
+# ---------------------------------------------------------------------------
+# Error shape consistency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_validation_error_is_rfc7807(api_client, tenant, user_id):
+    """Serializer validation failures return a full RFC 7807 problem+json body.
+
+    Ensures ``type`` is a URI, ``title`` and ``status`` are present, and
+    the DRF field errors are embedded under the ``errors`` key.
+    """
+    resp = api_client.post(
+        _ADD_PRODUCT,
+        data={},  # missing product_id and quantity
+        format="json",
+        **_headers(tenant.domain, user_id),
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["type"].startswith("https://"), (
+        f"type must be a URI, got {body['type']!r}"
+    )
+    assert "validation/invalid-input" in body["type"]
+    assert "title" in body, "RFC 7807 body must include 'title'"
+    assert body["status"] == 400, "RFC 7807 body must mirror the HTTP status code"
+    assert "errors" in body, "Validation response must embed DRF field errors"
+
+
+# ---------------------------------------------------------------------------
+# CartCheckoutView — 409 conflict scenarios
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_checkout_action_409_on_lock_conflict(
+    api_client, tenant, user_id, ready_cart, monkeypatch
+):
+    """CartCheckoutView returns 409 cart/locked when the Redis lock is unavailable."""
+    from contextlib import contextmanager
+    from apps.core.exceptions import LockNotAcquired
+
+    @contextmanager
+    def _lock_always_fails(_key, _ttl, *, client=None):
+        raise LockNotAcquired("lock already held by concurrent request")
+        yield  # noqa: unreachable
+
+    monkeypatch.setattr("apps.order.services.redis_lock", _lock_always_fails)
+
+    resp = api_client.post(
+        _CHECKOUT,
+        data={},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        **_headers(tenant.domain, user_id),
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "cart/locked" in body.get("type", ""), (
+        f"Expected 'cart/locked' in type, got {body.get('type')!r}"
+    )

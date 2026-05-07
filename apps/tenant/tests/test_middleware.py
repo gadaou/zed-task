@@ -68,26 +68,38 @@ class TenantMiddlewareResolutionTests(TestCase):
         req = self._request()  # no domain header
         response = self.middleware(req)
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
         body = json.loads(response.content)
-        self.assertEqual(body["type"], "tenant/missing-header")
+        self.assertIn("tenant/missing-header", body["type"])
+        self.assertTrue(body["type"].startswith("https://"))
+        self.assertIn("title", body)
+        self.assertEqual(body["status"], 400)
 
     def test_unknown_domain_returns_404(self) -> None:
         req = self._request(domain="ghost.example.com")
         response = self.middleware(req)
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
         body = json.loads(response.content)
-        self.assertEqual(body["type"], "tenant/not-found")
+        self.assertIn("tenant/not-found", body["type"])
+        self.assertTrue(body["type"].startswith("https://"))
+        self.assertIn("title", body)
+        self.assertEqual(body["status"], 404)
 
     def test_disabled_tenant_returns_403(self) -> None:
         _make_tenant("disabled.example.com", active=False)
         req = self._request(domain="disabled.example.com")
         response = self.middleware(req)
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
         body = json.loads(response.content)
-        self.assertEqual(body["type"], "tenant/disabled")
+        self.assertIn("tenant/disabled", body["type"])
+        self.assertTrue(body["type"].startswith("https://"))
+        self.assertIn("title", body)
+        self.assertEqual(body["status"], 403)
 
 
 @override_settings(

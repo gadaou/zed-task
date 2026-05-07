@@ -8,7 +8,7 @@ Endpoint set (action-style, user resolved from ``X-User-Id`` header):
     GET  /api/v1/cart                  — retrieve (or auto-create) the active cart
     POST /api/v1/cart/add-product      — add a product to the cart
     POST /api/v1/cart/remove-product   — remove a product from the cart
-    POST /api/v1/cart/apply-coupon     — apply a coupon code
+    POST /api/v1/cart/add-coupon       — apply a coupon code
     POST /api/v1/cart/remove-coupon    — remove an applied coupon
     POST /api/v1/cart/add-address      — create + select a shipping address
     POST /api/v1/cart/add-payment-method — create + select a payment method
@@ -71,7 +71,7 @@ from apps.core.openapi import (
     USER_ID_HEADER,
     problem_response,
 )
-from apps.core.responses import map_exception, problem
+from apps.core.responses import map_exception, problem, validation_problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.coupon.services import CouponService
 from apps.order.exceptions import (
@@ -236,6 +236,15 @@ class AddProductView(APIView):
                 description="Updated cart after product was added.",
             ),
             **_CART_COMMON_ERRORS,
+            404: problem_response(
+                404,
+                "product/not-found",
+                "Product not found",
+                "product cccccccc-… not found in this tenant's catalog",
+                description=(
+                    "Returned when `product_id` does not exist within the current tenant."
+                ),
+            ),
         },
     )
     def post(self, request: Request) -> Response:
@@ -245,10 +254,7 @@ class AddProductView(APIView):
 
         serializer = AddProductSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         data = serializer.validated_data
         product_id: UUID = data["product_id"]
@@ -314,10 +320,7 @@ class RemoveProductView(APIView):
 
         serializer = RemoveProductSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         product_id: UUID = serializer.validated_data["product_id"]
         cart = get_or_create_active_cart(user_id)
@@ -331,7 +334,7 @@ class RemoveProductView(APIView):
 
 
 class ApplyCouponView(APIView):
-    """``POST /api/v1/cart/apply-coupon``
+    """``POST /api/v1/cart/add-coupon``
 
     Apply a coupon code to the caller's active cart.
 
@@ -368,18 +371,13 @@ class ApplyCouponView(APIView):
 
         serializer = ApplyCouponSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         code: str = serializer.validated_data["code"]
         cart = get_or_create_active_cart(user_id)
 
         try:
             cart = _COUPON_SERVICE.apply_coupon_to_cart(cart, code)
-        except CouponDomainError as exc:
-            return problem(exc.type, "Coupon validation failed", 422, exc.detail)
         except Exception as exc:
             return map_exception(exc)
 
@@ -422,10 +420,7 @@ class RemoveCouponView(APIView):
 
         serializer = RemoveCouponSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         coupon_id: UUID = serializer.validated_data["coupon_id"]
         cart = get_or_create_active_cart(user_id)
@@ -484,10 +479,7 @@ class AddAddressView(APIView):
 
         serializer = AddAddressSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         data = serializer.validated_data
         cart = get_or_create_active_cart(user_id)
@@ -550,10 +542,7 @@ class AddPaymentMethodView(APIView):
 
         serializer = AddPaymentMethodSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         gateway_slug: str = serializer.validated_data["gateway_slug"]
         cart = get_or_create_active_cart(user_id)
@@ -626,6 +615,31 @@ class CartCheckoutView(APIView):
                 "Idempotency-Key header is required or invalid",
                 "Supply a UUID in the Idempotency-Key header.",
             ),
+            404: problem_response(
+                404,
+                "cart/not-found",
+                "Cart not found",
+                "cart a1b2c3d4-… not found",
+                description=(
+                    "Returned when no active cart exists for the resolved "
+                    "`X-Tenant-Domain` + `X-User-Id` combination."
+                ),
+            ),
+            409: problem_response(
+                409,
+                "cart/locked",
+                "Conflict — cart locked or idempotency issue",
+                "A concurrent checkout is already in progress for this cart.",
+                description=(
+                    "Returned in three scenarios:\n\n"
+                    "| `type` | Cause | Client action |\n"
+                    "|--------|-------|---------------|\n"
+                    "| `cart/locked` | Redis lock already held | Retry after ~1 s back-off |\n"
+                    "| `cart/already-checked-out` | Cart already checked out | Create a new cart |\n"
+                    "| `idempotency/conflict` | Same key, different request | Use a new key |\n"
+                    "| `idempotency/in-progress` | Duplicate in-flight request | Retry after short back-off |\n"
+                ),
+            ),
             422: problem_response(
                 422,
                 "cart/checkout-incomplete",
@@ -647,10 +661,7 @@ class CartCheckoutView(APIView):
         # Validate (empty) body — present for OpenAPI schema consistency.
         serializer = CartCheckoutSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(
-                {"type": "validation/invalid-input", "errors": serializer.errors},
-                status=400,
-            )
+            return validation_problem(serializer.errors)
 
         # Parse and validate Idempotency-Key header.
         raw_key = request.headers.get("Idempotency-Key", "").strip()
