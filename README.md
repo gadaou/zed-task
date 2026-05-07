@@ -1,62 +1,198 @@
 # cart_system
 
-Multi-tenant cart and checkout service built for a single-deployment SaaS commerce model: one codebase, one PostgreSQL cluster, one Redis cluster, many tenants.
+Multi-tenant cart and checkout service. One PostgreSQL database, one Redis cluster, one Celery deployment — many tenants. The system is built reliability-first: cart reads survive payment pipeline degradation, and checkout correctness is guaranteed under concurrent requests.
 
-The system contract lives in [`PROJECT_SPEC.md`](PROJECT_SPEC.md). The implementation snapshot and flow details live in [`docs/architecture.md`](docs/architecture.md).
-
----
-
-## 1) Project Overview
-
-`cart_system` is a multi-tenant commerce backend designed to keep cart and checkout flows reliable under shared infrastructure.
-
-- **Multi-tenant by construction**: tenancy is encoded in request handling, ORM access patterns, lock keys, and service boundaries.
-- **Single database model**: all tenants share one PostgreSQL source of truth using `tenant_id` scoped data access.
-- **Always-online posture**: cart reads remain available even when payment/invoice pipelines degrade; checkout paths prioritize safe partial degradation over hard downtime.
+The architectural contract lives in [`PROJECT_SPEC.md`](PROJECT_SPEC.md). Implementation details and flow diagrams live in [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## 2) Architecture
+## Reviewer Quickstart
 
-Core stack:
+```bash
+make up           # build images, start web / worker / db / redis, run migrations
+make seed         # create demo tenant, products, coupons, address, payment method, cart
+make swagger      # open http://localhost:8000/api/docs/ in the browser
+# copy the curl checkout command printed by `make seed` and run it
+make test         # full pytest suite
+make logs s=worker  # watch Celery process the payment + invoice tasks
+```
 
-- **Django + Django REST Framework** for API delivery and service-layer architecture.
-- **PostgreSQL** as the system of record for all tenant data.
-- **Redis** for distributed locks, idempotency in-progress markers, and cache/coordination concerns.
-- **Celery** for async workloads such as payment authorization/finalization and invoice/notification pipelines. Redis is used as the Celery broker for this assessment to keep the deployment simple and aligned with the existing Redis dependency used for locks and idempotency. For higher-scale production workloads, the broker can be replaced with RabbitMQ or another dedicated messaging system without changing the payment domain logic.
-
-High-level request flow:
-
-`Client -> DRF View -> Service Layer -> PostgreSQL (+ Redis coordination) -> on_commit -> Celery Worker -> Gateway`
-
----
-
-## 3) Core Features
-
-Current service scope centers on cart and checkout operations:
-
-- Add product to cart
-- Remove product from cart
-- Apply coupon to cart
-- Remove coupon from cart
-- Add address
-- Add payment method
-- Checkout cart
-
-Endpoints are versioned under `/api/v1/` and follow resource-oriented conventions.
+That is the complete end-to-end loop. Everything below explains what is happening under the hood.
 
 ---
 
-## 4) Cart Identification and Routing
+## 1. Overview
 
-### Why customer-facing endpoints do not require a `cart_id`
+- **Multi-tenant by construction.** Every model carries `tenant_id`. The ORM manager, middleware, lock-key namespace, and index design all treat tenant scope as a first-class constraint — not an afterthought.
+- **Single PostgreSQL database.** All tenants share one cluster using a shared-schema model. PostgreSQL is the only system of record; Redis is coordination infrastructure, not storage.
+- **Reliability-first design.** Cart reads remain available when payment or invoice pipelines degrade. Checkout uses a layered safety model: distributed locks, database transactions, idempotency records, and conditional stock updates that make concurrent races safe by construction.
 
-Traditional resource-oriented APIs use explicit `cart_id` in URLs (`/carts/{cart_id}/...`). This works well for internal or admin tooling but creates friction for end-customers who should not need to manage cart identifiers themselves.
+---
 
-The customer-facing action endpoints instead resolve the **active cart automatically**:
+## 2. Architecture
 
 ```
-GET  /api/v1/cart/
+Client
+  └── DRF View (thin: parse, validate, dispatch, serialize)
+        └── Service Layer (transactions, locks, domain logic)
+              ├── PostgreSQL  ← source of truth for all state
+              └── Redis       ← locks, idempotency sentinels, Celery broker
+                    ↓ transaction.on_commit
+              Celery Worker
+                    └── Payment Gateway / PDF renderer
+```
+
+**Stack:**
+
+- **Django REST Framework** — versioned API under `/api/v1/`, cursor pagination, `drf-spectacular` for OpenAPI 3 docs. Views are intentionally thin; all business logic lives in `services.py`.
+- **PostgreSQL** — the only durable store. Every table has `tenant_id` as the leading index column. Cross-tenant queries go through a single `all_tenants()` manager escape hatch (used only by async workers that need to resolve an order back to its tenant).
+- **Redis** — three roles: distributed checkout locks (`SET NX PX` + fenced Lua unlock), in-progress idempotency sentinels (`SET NX EX`), and Celery broker. Redis is used as the broker for this assessment to keep the deployment to a single additional service; the payment domain logic is fully decoupled from transport, so swapping to RabbitMQ is a `CELERY_BROKER_URL` change.
+- **Celery** — three named queues: `payments`, `invoices`, `notifications`. Workers use `acks_late` and prefetch 1 so tasks are not lost on worker crash. Every task is written to be idempotent — Celery re-deliveries are safe no-ops.
+
+---
+
+## 3. Core Flows
+
+### 3.1 Active cart resolution
+
+`get_or_create_active_cart(tenant, user_id)` does a GET then INSERT. A partial unique index on `(tenant_id, user_id) WHERE status = 'ACTIVE'` makes the race safe: if two concurrent requests both pass the GET phase, only one INSERT wins; the loser retries with a GET and returns the winner's row. CHECKED_OUT carts are excluded from the index so historical orders never block a new purchase.
+
+### 3.2 Add / remove product
+
+`add_product_to_cart` and `remove_product_from_cart` run inside `transaction.atomic()` with `select_for_update()` on the cart row. Every mutation increments `Cart.version` using `F("version") + 1` — a cheap optimistic-concurrency signal for cache invalidation. `recalculate_cart()` recomputes totals and applied coupon discounts before the transaction commits.
+
+### 3.3 Coupon apply / remove
+
+Applying a coupon runs the coupon through the rule registry (usage limits, stacking policy, validity window) before writing a `CartCoupon` record. Checkout revalidates all applied coupons at transaction time to catch drift between apply-time and checkout-time state — a coupon that was valid when applied can still be rejected at checkout if usage limits were reached concurrently.
+
+### 3.4 Address and payment method selection
+
+`set_cart_address` associates a validated address with the cart. `add_payment_method(gateway_slug=...)` resolves the slug through the gateway registry before persisting the `PaymentMethod` — an unsupported gateway slug is rejected at creation time, not at checkout.
+
+### 3.5 Checkout
+
+`CheckoutService.checkout()` runs a 17-step protocol:
+
+1. Check for an existing `IdempotencyRecord` — if found, replay the stored response immediately.
+2. Check the Redis in-progress sentinel — if found, return `409 in-progress` to the concurrent caller.
+3. Acquire the Redis checkout lock (`SET NX PX`). If the lock is held, return `409 lock-contention`.
+4. Open `transaction.atomic()`.
+5. Lock the cart row with `select_for_update()`.
+6. Revalidate all applied coupons.
+7. Deduct stock: `UPDATE catalog_product SET stock = stock - qty WHERE pk = ? AND stock >= qty`. Zero rows updated raises a 409 — no overselling is possible.
+8. Create `Order` and `OrderItem` rows.
+9. Transition the cart to `CHECKED_OUT`.
+10. Create a `Payment` record in `REQUIRES_CONFIRMATION` state.
+11. Write the `IdempotencyRecord` with the serialized response payload.
+12. Register `transaction.on_commit(enqueue_authorize_payment)`.
+13. Commit.
+14. In the `finally` block: clear the Redis lock and the in-progress sentinel.
+
+The `on_commit` hook guarantees the Celery task is enqueued only after a successful commit. A rolled-back checkout never orphans a payment or invoice task.
+
+### 3.6 Payment authorization
+
+The `authorize_payment` Celery task (queue: `payments`) resolves the payment gateway by slug, calls `gateway.authorize(...)`, and applies status-guarded updates:
+
+- `Payment.status`: `REQUIRES_CONFIRMATION → AUTHORIZED` (or `FAILED` on decline).
+- `Order.status`: `PENDING_PAYMENT → PAID`.
+
+The UPDATE uses `WHERE status = <expected>` — zero rows affected is treated as a safe idempotency signal, not an error. On success, `transaction.on_commit(enqueue_generate_invoice)` dispatches the invoice task. Gateway timeouts increment the `payment.timeout` metric and re-raise so Celery retries with backoff and jitter.
+
+### 3.7 Invoice generation
+
+Two phases, intentionally separated to keep the database transaction short and to avoid mixing file I/O with database locks.
+
+**Phase 1 — inside `transaction.atomic()`:**
+Lock the `InvoiceSequence` row for the tenant with `select_for_update()`, atomically increment `last_number`, and INSERT an `Invoice` row with `pdf_url = ""`. The row is committed immediately; the invoice exists in the database before any file I/O begins.
+
+**Phase 2 — outside the transaction:**
+Call `render_invoice_pdf(...)` (ReportLab) to write the file to `MEDIA_ROOT/invoices/<id>.pdf`. Apply a status-guarded update: `UPDATE invoice SET pdf_url = <url> WHERE pk = ? AND pdf_url = ""`. Zero rows affected means another worker already completed the PDF — safe no-op.
+
+A row with `pdf_url = ""` is the durable retry signal. If the worker crashes between Phase 1 and Phase 2, the next delivery re-renders the PDF without re-allocating a sequence number, because Phase 1 is protected by the `OneToOneField` constraint on `Order`.
+
+---
+
+## 4. Key Guarantees
+
+- **Tenant isolation.** `TenantMiddleware` resolves the tenant from `X-Tenant-Domain` and stores it on the request. `TenantAwareManager` is the default ORM manager on every model — it automatically scopes all queries to the current tenant. `tenant_id` leads every composite index.
+
+- **One active cart per tenant/user.** Enforced at the database level by a partial unique index `WHERE status = 'ACTIVE'`. Application-level retries handle the race; the database is the final arbiter.
+
+- **Idempotent checkout.** `Idempotency-Key` triggers a two-layer check: a Redis sentinel (`SET NX EX`) for fast in-progress detection, and a PostgreSQL `IdempotencyRecord` for durable replay. Replayed responses are bit-for-bit identical to the original — the serialized payload is stored, not recomputed.
+
+- **No overselling.** Stock deduction uses a conditional update: `UPDATE … SET stock = stock - qty WHERE stock >= qty`. If stock is insufficient the update affects zero rows; the service raises a 409 before the transaction commits. No application-level read-then-write race is possible.
+
+- **`transaction.on_commit` discipline.** Every Celery dispatch (`enqueue_authorize_payment`, `enqueue_generate_invoice`) is registered with `on_commit`. A transaction that rolls back never enqueues a task.
+
+- **Two-phase invoice generation.** The `Invoice` row is committed before file I/O starts. The `pdf_url = ""` sentinel is the crash-recovery signal. Phase 2 is idempotent via the status-guarded UPDATE.
+
+- **Cart cache invalidation.** `schedule_cart_cache_invalidation` is called on every cart mutation — add/remove product, coupon changes, address and payment method updates, checkout. Stale cache entries are never served after a write.
+
+---
+
+## 5. Pluggable Payments
+
+The payment system is built around a `PaymentGateway` abstract base class with two surfaces:
+
+**Simple charge path:**
+```python
+gateway.charge(amount, currency, payment_method_data) -> ChargeResult
+```
+
+**Full lifecycle:**
+```python
+gateway.authorize(...)  -> AuthorizationResult
+gateway.capture(...)    -> CaptureResult
+gateway.void(...)       -> VoidResult
+gateway.refund(...)     -> RefundResult
+```
+
+Gateways are registered by slug and resolved at runtime:
+
+```python
+register_payment_gateway("stripe", StripeGateway)
+gateway = get_payment_gateway("stripe")   # no if/else in service code
+```
+
+Three deterministic test gateways are included and registered at startup via `PaymentConfig.ready()`:
+
+| Slug | Behaviour |
+|---|---|
+| `dummy_success` | Always authorises |
+| `dummy_failing` | Always declines (`GatewayDeclined`) |
+| `dummy_timeout` | Always raises `GatewayTimeout` |
+
+**To add a real gateway:**
+1. Subclass `PaymentGateway` and implement the required methods.
+2. Call `register_payment_gateway("your-slug", YourGateway)` — typically in an `AppConfig.ready()`.
+3. Add contract tests against the shared gateway test base in `apps/payment/tests/`.
+4. Set the `gateway_slug` on the tenant's payment method configuration.
+
+No changes to `CheckoutService`, `PaymentService`, or any task are required. See [`docs/payment-gateways.md`](docs/payment-gateways.md) for the full interface contract.
+
+---
+
+## 6. API Reference
+
+| | URL |
+|---|---|
+| Swagger UI | `http://localhost:8000/api/docs/` |
+| OpenAPI schema | `http://localhost:8000/api/schema/` |
+| ReDoc | `http://localhost:8000/api/redoc/` |
+
+### Required headers
+
+| Header | Required on | Notes |
+|---|---|---|
+| `X-Tenant-Domain` | All tenant-scoped endpoints | Resolved to a `Tenant` row by middleware; missing or unknown domain returns 400 |
+| `X-User-Id` | All cart / checkout endpoints | UUID string; the API gateway is responsible for validating the bearer token and injecting this header |
+| `Idempotency-Key` | Checkout only | Any unique string (UUID recommended); required for both checkout endpoints |
+
+### Cart endpoints (customer-facing, no `cart_id` required)
+
+```
+GET  /api/v1/cart/                    read active cart (created on first access)
 POST /api/v1/cart/add-product/
 POST /api/v1/cart/remove-product/
 POST /api/v1/cart/add-coupon/
@@ -66,240 +202,42 @@ POST /api/v1/cart/add-payment-method/
 POST /api/v1/cart/checkout/
 ```
 
-Resolution happens via three inputs, all present on every request:
+The active cart is resolved automatically from `(X-Tenant-Domain, X-User-Id, status=ACTIVE)`. Customers never manage cart identifiers.
 
-| Input | Source | Purpose |
-|---|---|---|
-| Tenant | `X-Tenant-Domain` header → `TenantMiddleware` | Scopes all DB queries to the correct tenant |
-| User identity | `X-User-Id` header (UUID) | Identifies the customer within the tenant |
-| Cart status | `Cart.status = ACTIVE` | Selects the in-progress cart, not a historical one |
+### Explicit checkout (internal / admin)
 
-If no ACTIVE cart exists when the customer first interacts with the API, one is created transparently. The customer never has to manage cart state manually.
-
-### User identity: `X-User-Id` header
-
-`X-User-Id` is the **interim** contract for user identity. The API gateway is responsible for validating the bearer token and injecting this header before the request reaches Django. Until bearer-token middleware lands, clients supply it directly. Missing or malformed values return `400 validation/user-id-required`.
-
-### The unique active-cart constraint
-
-At the database level, a **partial unique index** enforces that only one ACTIVE cart can exist per `(tenant_id, user_id)` pair:
-
-```sql
-CREATE UNIQUE INDEX uq_cart_one_active_per_tenant_user
-    ON cart_cart (tenant_id, user_id)
-    WHERE status = 'ACTIVE';
+```
+POST /api/v1/carts/{cart_id}/checkout/
 ```
 
-This makes the GET→INSERT race in `get_or_create_active_cart()` safe: if two concurrent requests both pass the GET phase, only one INSERT wins; the loser retries with a GET and returns the winner's row. CHECKED_OUT carts are excluded from the index, so historical carts never block a new purchase.
+Requires `X-User-Id` to match the cart owner. Use this endpoint from ops tooling or integration tests that track a specific cart ID.
 
-### Resource-oriented endpoint: when to use `cart_id`
+### Health
 
-The legacy endpoint `POST /api/v1/carts/{cart_id}/checkout/` is preserved for **explicit/internal flows** (ops tooling, admin dashboards, integration tests that track a specific cart ID). It enforces:
-
-- Tenant isolation: the cart must belong to the current tenant (enforced by `TenantAwareManager`).
-- User ownership: when `X-User-Id` is present, the cart's `user_id` must match or the request is rejected with `403 cart/forbidden`.
-
-Customer-facing clients should prefer `POST /api/v1/cart/checkout/` (no `cart_id`) for simplicity.
-
----
-
-## 5) Reliability & Consistency
-
-The reliability model combines database guarantees with distributed coordination:
-
-- **Tenant isolation** via middleware + tenant-aware ORM manager + tenant-led indexes
-- **Transactional boundaries** around critical mutations using `transaction.atomic()`
-- **Row-level serialization** with `select_for_update` on sensitive state transitions
-- **Redis distributed locks** for cross-process checkout serialization (`SET NX PX` + fenced Lua unlock)
-- **Idempotency** for checkout using `Idempotency-Key` and durable `IdempotencyRecord` replay
-- **Conditional stock deduction** (`UPDATE ... WHERE stock >= qty`) to prevent negative-stock races
-- **`transaction.on_commit` discipline** — Celery tasks are only enqueued after a successful `COMMIT`; a rolled-back checkout never orphans a payment or invoice task
-- **Retryable async tasks** — payment and invoice workers are designed with `max_retries`, `retry_backoff`, `retry_jitter`, and `acks_late`; each task is idempotent so Celery re-deliveries are safe no-ops
-- **Status-guarded UPDATEs** — FSM transitions on `Payment.status`, `Order.status`, and `Invoice.pdf_url` are written as `UPDATE … WHERE status = <expected>`, turning zero rows affected into a safe idempotency signal rather than a hidden bug
+```
+GET /health/    liveness — always 200 if the process is running
+GET /ready/     readiness — 200 if Postgres and Redis are reachable; 503 otherwise
+GET /healthz    alias for /health/
+GET /readyz     alias for /ready/
+```
 
 ---
 
-## 5) Payment System
+## 7. Setup and Commands
 
-Payments use a pluggable gateway architecture behind a stable abstraction.
-
-- Domain/services depend on a `PaymentGateway` interface, not concrete providers
-- Gateways are resolved through a registry (`register_payment_gateway`, `get_payment_gateway`)
-- No `if/else` provider branching in service flow
-
-For assignment/testing, deterministic dummy gateways are included:
-
-- `DummySuccessGateway`
-- `DummyFailingGateway`
-- `DummyTimeoutGateway`
-
-To add a real gateway later:
-
-1. Implement the `PaymentGateway` interface
-2. Register it in the gateway registry
-3. Add contract tests against the shared gateway contract suite
-4. Configure tenant/provider mapping to point at the new slug
-
-See [`docs/payment-gateways.md`](docs/payment-gateways.md).
-
----
-
-## 6) Coupon System
-
-Coupons are implemented with a rule-based constraint model and transactional safety:
-
-- **Rule registry** for extensible constraint validation (open for extension)
-- **Usage limits** enforced with conditional increments and DB constraints
-- **Stacking policy** support (single-only / one-per-type / unlimited patterns)
-- **Checkout revalidation** to catch drift between coupon apply-time and checkout-time
-
-This preserves correctness under concurrency and evolving cart state.
-
----
-
-## 7) Invoice System
-
-Invoices are generated asynchronously after a payment is confirmed, using a two-phase approach designed to keep database transactions short and avoid mixing file I/O with database locks.
-
-### Phase 1 — Transactional DB work (inside `transaction.atomic`)
-
-1. Lock the `InvoiceSequence` row for the tenant with `select_for_update`.
-2. Atomically increment the per-tenant monotonic invoice number (`last_number + 1`).
-3. `INSERT` an `Invoice` row with `pdf_url = ""` (committed immediately; the row exists before any I/O begins).
-
-### Phase 2 — PDF rendering (outside the transaction)
-
-4. Call `render_invoice_pdf(...)` using ReportLab to write the PDF to `MEDIA_ROOT/invoices/<id>.pdf`.
-5. Apply a **status-guarded UPDATE**: `UPDATE invoice SET pdf_url = <url> WHERE pk = <id> AND pdf_url = ""`; zero rows affected means another worker already set the URL — safe no-op.
-
-**Why two phases?**
-
-| Concern | Resolution |
-|---|---|
-| Long DB locks | PDF I/O is never inside the transaction; lock hold time is microseconds |
-| File I/O inside transactions | Failure at step 4 never leaves an open transaction or partial DB state |
-| Retryable PDF generation | Phase 1 is idempotent via `OneToOneField` constraint; phase 2 is idempotent via the status-guarded UPDATE |
-| Crash recovery | A row with `pdf_url = ""` is the durable signal for a pending retry; the worker re-renders without re-allocating a sequence number |
-
-The `generate_invoice` Celery task runs on the `invoices` queue and is dispatched via `transaction.on_commit` after `Order.status` transitions to `PAID`.
-
-Authoritative roadmap: [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
-
----
-
-## 8) Scaling Considerations
-
-The architecture is designed to scale horizontally without requiring a distributed rewrite.
-
-**Today (single-process baseline):**
-- One Django process handles all API traffic; Gunicorn workers add concurrency without coordination overhead.
-- Redis acts as the shared coordination layer for distributed locks and idempotency — adding API servers requires no changes here, the lock key namespace (`lock:checkout:{tenant_id}:{cart_id}`) already distributes cleanly.
-- PostgreSQL is the single source of truth; composite indexes lead with `tenant_id` so tenant-scoped queries hit narrow B-tree ranges.
-
-**Near-term (read scaling):**
-- Non-mutating paths (product browse, cart reads, coupon lookup) can route to a Postgres read replica with a one-line Django `DATABASES` routing change — no ORM or service changes required.
-- Redis client-side caching can front hot catalog reads (product price, stock availability) for tenants with high read-to-write ratios.
-
-**Longer-term (write scaling + multi-region):**
-- Every table carries `tenant_id` and every query filters by it. Citus (Postgres extension) can shard by `tenant_id` column with no application-layer changes — the `all_tenants()` manager escape hatch is already the only cross-tenant query path.
-- The Celery queue split (`payments`, `invoices`, `notifications`) allows scaling workers independently — payment workers are I/O-bound on gateway latency; invoice workers are CPU-bound on PDF rendering.
-- The event-driven skeleton is already in place (`transaction.on_commit` → Celery); migrating to an event broker (Kafka, SQS, or RabbitMQ) is a task-dispatch replacement, not an architectural change. The payment domain logic is fully decoupled from the broker — swapping `CELERY_BROKER_URL` and the relevant transport package is the only change required.
-
-**Explicit non-goals (for now):**
-Multi-region active-active, per-tenant databases, and event sourcing are deferred per spec §7.5: "No premature distribution."
-
----
-
-## 9) API Documentation
-
-- Swagger UI: `http://localhost:8000/api/docs/`
-- OpenAPI schema: `http://localhost:8000/api/schema/`
-- ReDoc: `http://localhost:8000/api/redoc/`
-
-Required headers:
-
-- `X-Tenant-Domain` on tenant-scoped endpoints
-- `Idempotency-Key` on checkout (`POST /api/v1/carts/{cart_id}/checkout`)
-
-Health endpoints:
-
-- `GET /health/` (liveness)
-- `GET /ready/` (readiness)
-- `GET /healthz` and `GET /readyz` are compatibility aliases.
-
-Reminder:
-
-- `/health/` checks application liveness.
-- `/ready/` checks whether required dependencies such as PostgreSQL and Redis are available.
-
----
-
-## 10) Demo Seed & Quick Checkout
-
-The fastest way to see the full checkout flow in action.
-
-### Seed demo data
+### Docker Compose (recommended)
 
 ```bash
-python manage.py seed_demo_data
+cp .env.example .env      # review DATABASE_URL / REDIS_URL if needed
+make up                   # builds images, starts all services, runs migrations automatically
+make seed                 # load demo data — prints a ready-to-run curl checkout command
 ```
 
-This creates (idempotently — safe to run multiple times):
+The `web` container runs `migrate --noinput` at startup, so `make migrate` is only needed after `make reset`.
 
-| Object | Value |
-|---|---|
-| Tenant | `demo.localhost` |
-| Products | Wireless Headphones ($79.99), Mechanical Keyboard ($129.99), USB-C Hub ($34.99) |
-| Coupons | `DEMO10` (10% off), `SAVE5` ($5 fixed) |
-| Customer UUID | `00000000-0000-0000-0000-000000000001` |
-| Address | San Francisco, US — set as default |
-| Payment method | `dummy_success` gateway |
-| Cart | Pre-loaded with 2 items, ready for checkout |
+### Makefile reference
 
-The command prints a ready-to-paste `curl` checkout command at the end. No manual ID hunting required.
-
-### Skip cart creation
-
-```bash
-python manage.py seed_demo_data --no-cart
-```
-
-All objects except the cart are seeded. Useful if you want to build the cart via the API yourself.
-
-### Test checkout in under 2 minutes
-
-After seeding, the command output includes a complete curl snippet. Copy and run it:
-
-```bash
-# 1. Seed (first time or repeat — safe either way)
-python manage.py seed_demo_data
-
-# 2. Copy the curl command printed at the end, which looks like:
-curl -s -X POST http://localhost:8000/api/v1/carts/<cart-id>/checkout/ \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-Domain: demo.localhost" \
-  -H "Idempotency-Key: $(python3 -c 'import uuid; print(uuid.uuid4())')" \
-  -d '{
-    "payment_method_id": "<payment-method-id>",
-    "address_id": "<address-id>"
-  }' | python3 -m json.tool
-
-# 3. Optional: apply the DEMO10 coupon before checkout
-curl -s -X POST http://localhost:8000/api/v1/carts/<cart-id>/coupons/ \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-Domain: demo.localhost" \
-  -d '{"coupon_code": "DEMO10"}' | python3 -m json.tool
-```
-
-Expected response: `202 Accepted` with `payment_status: "pending"` (the `dummy_success` gateway authorises synchronously in test/dev settings).
-
----
-
-## 11) Makefile Commands (Docker)
-
-All commands run against the Docker Compose stack. Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine with the Compose v2 plugin.
-
-### Stack lifecycle
+**Stack**
 
 | Command | Description |
 |---|---|
@@ -309,419 +247,136 @@ All commands run against the Docker Compose stack. Requires [Docker Desktop](htt
 | `make logs` | Tail logs for all services |
 | `make logs s=web` | Tail logs for a specific service (`web`, `worker`, `db`, `redis`) |
 | `make build` | Rebuild images without starting |
-| `make reset` | **Destroy everything** (volumes included), rebuild from scratch, start clean |
+| `make reset` | Destroy everything including volumes, rebuild clean |
 
-### Database
+**Database**
 
 | Command | Description |
 |---|---|
 | `make migrate` | Apply all pending migrations |
-| `make makemigrations` | Generate new migration files across all apps |
+| `make makemigrations` | Generate new migration files |
 | `make makemigrations app=invoice` | Generate migrations for a specific app |
 
-### Demo data
+**Demo data**
 
 | Command | Description |
 |---|---|
 | `make seed` | Idempotent seed — tenant, products, coupons, address, payment method, cart |
 | `make seed args=--no-cart` | Seed everything except the demo cart |
 
-### Quality
+**Quality**
 
 | Command | Description |
 |---|---|
 | `make test` | Run the full pytest suite inside the container |
-| `make test args='-k checkout'` | Run a subset of tests matching a keyword |
-| `make lint` | Run `ruff` linter (reports only, no auto-fix) |
+| `make test args='-k checkout'` | Run a subset of tests by keyword |
+| `make lint` | Run `ruff` (report only, no auto-fix) |
 
-### Developer tools
+**Developer tools**
 
 | Command | Description |
 |---|---|
-| `make shell` | Open a Django shell (`python manage.py shell`) |
-| `make shell-db` | Open `psql` inside the `db` container |
+| `make shell` | Django shell (`python manage.py shell`) |
+| `make shell-db` | `psql` inside the `db` container |
 | `make swagger` | Open Swagger UI in the default browser |
-
-### Zero-to-checkout in four commands
-
-```bash
-make up          # start the full stack (runs migrations automatically)
-make seed        # create demo tenant, products, coupons, and a ready cart
-# copy the curl command printed by seed and run it
-make logs        # watch the Celery worker process the payment + invoice tasks
-```
-
----
-
-## 12) How to Run
-
-### Docker Compose (recommended)
-
-```bash
-cp .env.example .env   # adjust DATABASE_URL / REDIS_URL if needed
-make up                # builds images, starts all services, runs migrations
-make seed              # load demo data
-# API is live at http://localhost:8000
-```
 
 ### Local (without Docker)
 
 ```bash
-# 1) Setup
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# 2) Environment
-cp .env.example .env
-# update DATABASE_URL / REDIS_URL and related settings
-
-# 3) Migrate
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip && pip install -r requirements.txt
+cp .env.example .env                       # set DATABASE_URL and REDIS_URL
 python manage.py migrate
-
-# 4) Run API
-python manage.py runserver
-
-# 5) Seed demo data
+python manage.py runserver                 # http://localhost:8000
 python manage.py seed_demo_data
-
-# 6) Run tests
 DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 ```
 
----
+### Settings modules
 
-## 13) Observability
-
-cart_system ships production-oriented observability foundations out of the box, with no vendor lock-in. Full details are in [`docs/observability.md`](docs/observability.md).
-
-### Request Correlation
-
-Every HTTP request carries an `X-Request-Id` correlation header:
-
-- If the client sends `X-Request-Id`, it is preserved and echoed back.
-- If absent, a UUID4 hex string is generated.
-- The id is bound into a `ContextVar` (`apps.core.context`) so **every log record emitted during that request** — in middleware, service layer, signal handlers — automatically carries `request_id` without any explicit argument passing.
-
-```
-X-Request-Id: 7b2e9c41a3d14e8d4b0ebeed5f3a2c87
-```
-
-### Structured Logs
-
-**Development** (human-readable):
-```
-[2026-05-07 02:30:00] INFO     apps.order.services req=7b2e9c41 tenant=aaa user=111 checkout.completed outcome=success cart_id=ccc duration_ms=87
-```
-
-**Production** (JSON, active in `prod.py`):
-```json
-{"ts":"2026-05-07T02:30:00.123","level":"INFO","logger":"apps.order.services","msg":"checkout.completed","request_id":"7b2e9c41...","tenant_id":"aaa...","action":"checkout.completed","outcome":"success","cart_id":"ccc...","duration_ms":87}
-```
-
-Key fields always present: `request_id`, `tenant_id`, `user_id`. Service-layer fields: `action`, `outcome`, `duration_ms`, `cart_id`, `order_id`, `payment_id`, `invoice_id`, `reason`.
-
-### Lifecycle Events Logged
-
-| Domain | Events |
+| Module | Used for |
 |---|---|
-| Checkout | `checkout.started`, `checkout.completed`, `checkout.failed`, `checkout.lock_failed` |
-| Payment | `payment.authorize_started`, `payment.authorized`, `payment.declined`, `payment.timeout` |
-| Idempotency | `idempotency.replay`, `idempotency.conflict`, `idempotency.in_progress` |
-| Cart | `cart.add_product`, `cart.remove_product`, `cart.set_address`, `cart.set_payment_method` |
-| Invoice | `invoice.generated`, `invoice.failed`, `invoice.pdf_retry` |
-| Readiness | `readiness.dependency_failed` (with `component=postgres|redis`) |
-
-### In-App Metric Hooks
-
-`apps.core.metrics.incr(name, **labels)` emits metric events as structured log records. No Prometheus/Datadog client is required — the log stream is the metric source. Swap `incr()` for a real counter client in production without changing any call site.
-
-Metrics emitted: `checkout.failed`, `checkout.lock_contention`, `payment.authorized`, `payment.declined`, `payment.timeout`, `idempotency.replay`, `idempotency.conflict`, `idempotency.in_progress`, `readiness.dependency_failed`, `invoice.failed`.
-
-### Recommended Production Metrics to Track
-
-- **Checkout latency p50/p95/p99** — `duration_ms` on `checkout.completed`
-- **Checkout failure rate by reason** — `checkout.failed` count grouped by `reason`
-- **Payment authorization success/failure/timeout rate**
-- **Redis lock contention rate** — `checkout.lock_contention` / `checkout.started`
-- **Idempotency replay/conflict rate**
-- **Cart cache hit/miss rate**
-- **Invoice generation success/failure rate**
-- **DB query latency** — from `pg_stat_statements` or APM
-- **Celery queue depth** and **task retry rate** for `payments` and `invoices` queues
-
-### Plugging into Datadog / Prometheus / OpenTelemetry Later
-
-- **Datadog**: configure the Datadog agent to ingest stdout JSON logs; create facets on `action`, `request_id`, `tenant_id`, `duration_ms`. No code changes needed.
-- **Prometheus**: replace `apps/core/metrics.py::incr` with `prometheus_client.Counter.labels(...).inc()`. Mount a `/metrics` endpoint.
-- **OpenTelemetry**: add `opentelemetry-instrumentation-django` and place the OTel middleware before `RequestIdMiddleware`. Forward `trace_id` as `X-Request-Id` or log both fields for cross-signal correlation.
+| `cart_system.settings.dev` | Local development — `DEBUG=True`, browsable API, `AllowAny` |
+| `cart_system.settings.prod` | Production — HSTS, secure cookies, JSON logging, no fallback secrets |
+| `cart_system.settings.test` | Test runs — SQLite fallback, `CELERY_TASK_ALWAYS_EAGER`, fast password hasher |
 
 ---
 
-## 13) Trade-offs
+## 8. Trade-offs
 
-Key architectural trade-offs are intentional and documented here for reviewers.
-
-| Decision | Pros | Accepted cost |
+| Decision | Why | Accepted cost |
 |---|---|---|
-| **Shared schema multi-tenancy (`tenant_id` column)** | Operational simplicity; one migration run; zero onboarding cost per tenant; sharding-ready by design | Larger blast radius if the primary DB degrades; row-level security (RLS) deferred |
-| **Async payment processing (Celery)** | Resilient checkout UX; retryable gateway interactions; checkout never blocks on gateway latency | Eventual consistency on final payment state; requires idempotency discipline in every task |
-| **Two-phase invoice generation** | Short DB lock hold time; PDF I/O never inside a transaction; clean retry semantics | Two database writes per invoice instead of one; `pdf_url = ""` sentinel must be monitored |
-| **Redis + PostgreSQL hybrid idempotency** | Fast in-progress guard in Redis; durable replay guarantee in Postgres | Dual-store operational complexity; Redis TTL expiry must outlive the longest possible checkout |
-| **Dummy payment gateways instead of real integrations** | Deterministic tests; clean `PaymentGateway` interface proven before real provider coupling | Provider-specific error codes, 3DS flows, and webhook verification deferred |
-| **Rule registry for coupon constraints** | Open for extension; zero service-code changes per new constraint type; unknown keys fail closed | Constraints opaque to SQL — cannot `WHERE` on JSON fields efficiently without Postgres JSON path operators |
-| **No premature distribution** | Dramatically lower operational surface; one process, one DB, one Redis is debuggable by one engineer | Vertical scaling ceiling; migration to multi-region or sharded topology is a future investment |
+| **Shared schema multi-tenancy (`tenant_id` column)** | Operational simplicity — one migration run, zero onboarding cost per tenant, sharding-ready by design | Larger blast radius if the primary DB degrades; per-tenant DB isolation deferred |
+| **Redis as Celery broker** | Keeps the deployment to a single additional service; no separate broker to operate for this assessment | For higher-scale production, swap to RabbitMQ — `CELERY_BROKER_URL` is the only required change; payment domain logic is fully decoupled from transport |
+| **No real payment gateway** | Clean `PaymentGateway` interface is proven against deterministic dummies before any provider coupling is introduced | Provider-specific error codes, 3DS flows, and webhook verification are not implemented |
+| **No aggressive checkout caching** | Checkout reads live database state — no risk of serving a stale stock count or stale coupon validity to a paying customer | Higher DB load per checkout; acceptable at the current scale target |
+| **Two-phase invoice generation** | PDF I/O never holds a database lock; crash recovery is clean via the `pdf_url = ""` sentinel | Two database writes per invoice instead of one; the sentinel must be monitored in production |
+| **Read replicas and sharding deferred** | "No premature distribution" — one DB is debuggable by one engineer | Vertical scaling ceiling; `tenant_id`-leading indexes and the `all_tenants()` escape hatch are already in place for a future Citus or replica-routing migration |
 
 ---
 
-## 14) Repository Layout
+## 9. Observability
+
+`cart_system` ships structured logging and metric hooks with no vendor lock-in. Full details are in [`docs/observability.md`](docs/observability.md).
+
+### Request correlation
+
+Every request carries an `X-Request-Id`. If the client sends one it is preserved; if absent a UUID4 hex string is generated. The ID is bound into a `ContextVar` (`apps.core.context`) so every log record emitted during that request — in middleware, service layer, signal handlers — automatically carries `request_id` without explicit argument passing. The header is echoed on the response.
+
+### Structured logs
+
+Development (human-readable):
+```
+[2026-05-07 02:30:00] INFO  apps.order.services req=7b2e9c41 tenant=aaa user=111 checkout.completed outcome=success duration_ms=87
+```
+
+Production (`prod.py` switches the console handler to JSON):
+```json
+{"ts":"2026-05-07T02:30:00.123","level":"INFO","logger":"apps.order.services","msg":"checkout.completed","request_id":"7b2e9c41...","tenant_id":"aaa...","outcome":"success","duration_ms":87}
+```
+
+### Metric hooks
+
+`apps.core.metrics.incr(name, **labels)` emits metric events as structured log records. No Prometheus or Datadog client is required. Replace `incr()` with a real counter client in production without changing any call site.
+
+Key metrics emitted: `checkout.failed`, `checkout.lock_contention`, `payment.authorized`, `payment.declined`, `payment.timeout`, `idempotency.replay`, `idempotency.conflict`, `invoice.failed`, `readiness.dependency_failed`.
+
+---
+
+## Repository Layout
 
 ```text
 .
-├── PROJECT_SPEC.md
+├── PROJECT_SPEC.md            ← architectural contract — read this first
 ├── README.md
-├── Makefile               ← make up / test / seed / reset / …
-├── Dockerfile             ← dev + prod multi-stage build
-├── docker-compose.yml     ← web, worker, db, redis
+├── Makefile                   ← make up / test / seed / reset / …
+├── Dockerfile                 ← dev + prod multi-stage build
+├── docker-compose.yml         ← web, worker, db, redis
 ├── .env.example
 ├── manage.py
 ├── requirements.txt
 ├── cart_system/
-│   ├── settings/
+│   ├── settings/              ← base / dev / prod / test
 │   ├── urls.py
 │   └── celery.py
 ├── apps/
-│   ├── core/          # health, idempotency, Redis lock, seed command
-│   ├── tenant/        # Tenant model, middleware, TenantAwareManager
-│   ├── catalog/       # Product — price, stock, currency
-│   ├── cart/          # Cart, CartItem, add/remove/recalculate
-│   ├── coupon/        # Coupon, CartCoupon, rule registry, stacking
-│   ├── addresses/     # Address — soft-delete, one default per user
-│   ├── payment/       # Payment, PaymentMethod, gateway registry
-│   ├── order/         # Order, OrderItem, CheckoutService
-│   └── invoice/       # Invoice, InvoiceSequence, two-phase PDF generation
+│   ├── core/                  ← health, request-id, idempotency, metrics, seed command
+│   ├── tenant/                ← Tenant model, TenantMiddleware, TenantAwareManager
+│   ├── catalog/               ← Product — price, stock, currency
+│   ├── cart/                  ← Cart, CartItem, add/remove/recalculate
+│   ├── coupon/                ← Coupon, CartCoupon, rule registry, stacking
+│   ├── addresses/             ← Address — soft-delete, one default per user
+│   ├── payment/               ← Payment, PaymentMethod, gateway registry
+│   ├── order/                 ← Order, OrderItem, CheckoutService
+│   └── invoice/               ← Invoice, InvoiceSequence, two-phase PDF generation
 └── docs/
     ├── architecture.md
+    ├── observability.md
     ├── payment-gateways.md
     └── openapi.yaml
 ```
 
----
-
-## Contributing
-
-1. Read [`PROJECT_SPEC.md`](PROJECT_SPEC.md) first.
-2. Reference the exact spec section your change implements.
-3. Keep diffs focused and reversible.
-4. Add tests for all service-layer behavior changes.
-5. Document non-obvious decisions with concise ADR notes close to code.
-
----
-
-## License
-
-TBD.
-
----
-
-## Legacy README (Preserved)
-
-Below is the original README content, kept intact per your request.
-
-# cart_system
-
-Multi-tenant cart and checkout service. Single Django + DRF deployment, single PostgreSQL database, strict tenant isolation, pluggable payment gateways.
-
-The architectural contract for the system is [`PROJECT_SPEC.md`](PROJECT_SPEC.md). Every change in this repository should trace back to a section in that document.
-
----
-
-## Status
-
-Foundation iteration — the project skeleton, settings split, six domain apps, and DRF wiring are in place. Models, services, API endpoints, Celery, Redis, and tests land in subsequent iterations driven off the spec.
-
----
-
-## Prerequisites
-
-| Tool                   | Version  | Notes                                              |
-| ---------------------- | -------- | -------------------------------------------------- |
-| Python                 | 3.11+    | 3.11 or 3.12 supported                              |
-| PostgreSQL             | 14+      | 16 recommended; the only system of record           |
-| pip                    | 23+      | bundled with modern Python                          |
-| Make / shell           | any      | optional convenience                                |
-
-A POSIX shell, `git`, and a working C toolchain (for psycopg's binary wheel fallback) are assumed.
-
----
-
-## Quick start
-
-```bash
-# 1. Clone and enter
-git clone <repo-url> cart_system && cd cart_system
-
-# 2. Create a virtualenv
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# 4. Configure environment
-cp .env.example .env
-#   then edit .env — at minimum set DATABASE_URL to a Postgres you control
-
-# 5. Create the database (once)
-createdb cart_system        # or use your own provisioning
-
-# 6. Run migrations
-python manage.py migrate
-
-# 7. Create a superuser for /admin (optional)
-python manage.py createsuperuser
-
-# 8. Run the dev server
-python manage.py runserver
-```
-
-Visit:
-
-* `http://localhost:8000/healthz` — liveness check, returns `{"status":"ok"}`.
-* `http://localhost:8000/api/docs/` — Swagger UI (OpenAPI 3.1).
-* `http://localhost:8000/api/redoc/` — Redoc rendering.
-* `http://localhost:8000/api/schema/` — raw OpenAPI document.
-* `http://localhost:8000/admin/` — Django admin.
-
----
-
-## Settings
-
-Settings are split per environment. Pick one with `DJANGO_SETTINGS_MODULE`:
-
-| Module                          | Purpose                                       | Default for                |
-| ------------------------------- | --------------------------------------------- | -------------------------- |
-| `cart_system.settings.base`     | Shared base. Never imported directly outside this package. | n/a               |
-| `cart_system.settings.dev`      | Local development. `DEBUG=True`, browsable API, `AllowAny`. | `manage.py`         |
-| `cart_system.settings.prod`     | Hardened production: HSTS, secure cookies, no fallbacks.    | `wsgi.py`, `asgi.py`|
-| `cart_system.settings.test`     | Fast deterministic test runs. SQLite fallback if no Postgres. | pytest config      |
-
-Configuration is environment-driven via [`django-environ`](https://django-environ.readthedocs.io). See [`.env.example`](.env.example) for the full list of variables.
-
----
-
-## Repository layout
-
-```text
-.
-├── PROJECT_SPEC.md              # source of truth — read this first
-├── README.md
-├── manage.py
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── cart_system/                 # project package
-│   ├── __init__.py
-│   ├── asgi.py
-│   ├── wsgi.py
-│   ├── urls.py                  # root router: /admin, /healthz, /api/v1/, /api/docs/
-│   └── settings/
-│       ├── __init__.py
-│       ├── base.py
-│       ├── dev.py
-│       ├── prod.py
-│       └── test.py
-└── apps/                        # local Django apps (referenced as apps.<name>)
-    ├── core/                    # cross-cutting: health, IDs, idempotency, errors
-    ├── tenant/                  # Tenant model, middleware, manager
-    ├── cart/                    # Cart, CartItem, cart operations
-    ├── coupon/                  # Coupon, constraints, redemption ledger
-    ├── payment/                 # Methods, intents, gateway plug-in registry
-    └── order/                   # Order, OrderItem, Address, Invoice
-```
-
-Each app follows the same internal layout:
-
-```text
-apps/<name>/
-├── __init__.py
-├── apps.py             # AppConfig
-├── models.py           # ORM models
-├── admin.py            # admin registrations
-├── urls.py             # router (mounted under /api/v1/<resource>/)
-├── views.py            # thin DRF views — parse, validate, dispatch, serialize
-├── serializers.py      # input validation + output shaping
-├── services.py         # all business logic, transactions, locks
-├── migrations/
-└── tests/
-```
-
-This separation between `views`, `services`, and `models` is mandated by [PROJECT_SPEC §4.1](PROJECT_SPEC.md). Views must stay thin; business logic lives in `services.py`.
-
----
-
-## Running tests
-
-```bash
-# Once pytest is added (next iteration), the canonical command is:
-DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest
-
-# Today, Django's own test runner works:
-python manage.py test
-```
-
-Coverage targets (PROJECT_SPEC §6.5):
-
-* Overall: 85%+
-* `services/checkout.py`, `services/coupons.py`, `services/payments.py`: 95%+
-* Every `PaymentGateway` implementation: 100% against the shared contract test base.
-
----
-
-## Common commands
-
-```bash
-# Run the full Django check pipeline
-python manage.py check
-
-# Generate the OpenAPI schema to a file
-python manage.py spectacular --file openapi.yaml
-
-# Format / lint (ruff + black added in a later iteration)
-# ruff check .
-# black .
-
-# Production-style server (gunicorn, defaults to settings.prod)
-DJANGO_SETTINGS_MODULE=cart_system.settings.prod \
-DJANGO_SECRET_KEY=... DJANGO_ALLOWED_HOSTS=example.com DATABASE_URL=... \
-gunicorn cart_system.wsgi:application --workers 4 --bind 0.0.0.0:8000
-```
-
----
-
-## API conventions
-
-* Versioned: every business endpoint lives under `/api/v1/`. New major versions go to `/api/v2/`; v1 stays supported for at least 12 months.
-* Resource-oriented: `/api/v1/carts/{cart_id}/items/{item_id}` style. No verbs in paths except for true actions like `/checkout`.
-* Errors: RFC 7807 problem+json with stable `type` URIs (the taxonomy is enumerated in [PROJECT_SPEC §2](PROJECT_SPEC.md)).
-* Pagination: cursor-based.
-* Auth: bearer JWT (added in a later iteration). Tenancy is *orthogonal* to authentication — both must succeed.
-* Idempotency: `POST /api/v1/carts/{id}/checkout` requires an `Idempotency-Key` header.
-* Payment gateways: pluggable behind the `PaymentGateway` ABC and a slug-keyed registry — see [`docs/payment-gateways.md`](docs/payment-gateways.md).
-
-See [`PROJECT_SPEC.md` §5.4](PROJECT_SPEC.md) for the full API design contract.
-
----
-
-## Contributing
-
-1. Read [`PROJECT_SPEC.md`](PROJECT_SPEC.md). The spec is the contract.
-2. Open a PR that references the spec section it implements.
-3. Keep diffs small. One logical change per PR.
-4. Tests are required for every service-layer function. Tenant-isolation tests are required for every new endpoint.
-5. Inline `# ADR-NOTE:` comments for any non-obvious decision so the next engineer does not have to reverse-engineer the choice.
+Each app follows the same internal layout: `models.py` → `services.py` (all business logic) → `views.py` (thin: parse, validate, dispatch, serialize) → `serializers.py` → `urls.py` → `tests/`.
 
 ---
 
