@@ -288,6 +288,8 @@ The `web` container runs `migrate --noinput` at startup, so `make migrate` is on
 | `make test args='-k checkout'` | Run a subset of tests by keyword |
 | `make lint` | Run `ruff` (report only, no auto-fix) |
 
+See [`docs/test-quality-summary.md`](docs/test-quality-summary.md) for test counts, category charts, feature coverage, and concurrency/idempotency notes.
+
 **Developer tools**
 
 | Command | Description |
@@ -389,7 +391,8 @@ Key metrics emitted: `checkout.failed`, `checkout.lock_contention`, `payment.aut
     ├── architecture.md
     ├── observability.md
     ├── payment-gateways.md
-    └── openapi.yaml
+    ├── openapi.yaml
+    └── test-quality-summary.md  ← test counts, charts, and quality notes
 ```
 
 Each app follows the same internal layout: `models.py` → `services.py` (all business logic) → `views.py` (thin: parse, validate, dispatch, serialize) → `serializers.py` → `urls.py` → `tests/`.
