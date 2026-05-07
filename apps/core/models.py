@@ -107,4 +107,6 @@ class IdempotencyRecord(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"IdempotencyRecord tenant={self.tenant_id} key={self.key} [{self.status}]"
+        return (
+            f"IdempotencyRecord tenant={self.tenant_id} key={self.key} [{self.status}]"
+        )

@@ -61,12 +61,20 @@ from __future__ import annotations
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
 
 from apps.core.logging import log_event
 from apps.invoice.exceptions import OrderNotFound, OrderNotPaid
+
+if TYPE_CHECKING:
+    # Resolved at type-check time only; runtime imports happen inside method
+    # bodies to keep the service import-side-effect-free and break circular
+    # imports with apps.invoice.models / apps.order.models.
+    from apps.invoice.models import Invoice
+    from apps.order.models import Order
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +135,7 @@ class InvoiceService:
                 order_id=str(order_id),
             )
             order = (
-                Order.objects.all_tenants()
-                .select_related("tenant")
-                .get(pk=order_id)
+                Order.objects.all_tenants().select_related("tenant").get(pk=order_id)
             )
         else:
             # ------------------------------------------------------------------
@@ -222,9 +228,8 @@ class InvoiceService:
         Order.objects.all_tenants().select_for_update().get(pk=order.pk)
 
         # Lock-or-create the per-tenant sequence row and increment atomically.
-        seq, _ = (
-            InvoiceSequence.objects.select_for_update()
-            .get_or_create(tenant=order.tenant)
+        seq, _ = InvoiceSequence.objects.select_for_update().get_or_create(
+            tenant=order.tenant
         )
         seq.last_number += 1
         seq.save(update_fields=["last_number", "updated_at"])

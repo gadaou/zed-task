@@ -36,7 +36,11 @@ from django.db import transaction
 
 from apps.cart.models import Cart
 from apps.catalog.models import Product
-from apps.core.exceptions import IdempotencyConflict, IdempotencyInProgress, LockNotAcquired
+from apps.core.exceptions import (
+    IdempotencyConflict,
+    IdempotencyInProgress,
+    LockNotAcquired,
+)
 from apps.core.idempotency import compute_request_hash
 from apps.core.models import IdempotencyRecord
 from apps.coupon.exceptions import CouponDomainError
@@ -62,11 +66,13 @@ from apps.payment.models import Payment
 
 def _checkout_kwargs(cart, address, pm, key=None) -> dict:
     key = key or uuid.uuid4()
-    rh = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(pm.id),
-        "address_id": str(address.id),
-    })
+    rh = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(pm.id),
+            "address_id": str(address.id),
+        }
+    )
     return dict(
         cart_id=cart.id,
         payment_method_id=pm.id,
@@ -128,7 +134,9 @@ def test_checkout_happy_path(checkout_service, loaded_cart, dispatched_payments)
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_empty_cart(checkout_service, cart_factory, address_factory, payment_method_factory):
+def test_checkout_empty_cart(
+    checkout_service, cart_factory, address_factory, payment_method_factory
+):
     """Empty cart raises CartEmpty."""
     cart = cart_factory()
     address = address_factory(user_id=cart.user_id)
@@ -139,17 +147,21 @@ def test_checkout_empty_cart(checkout_service, cart_factory, address_factory, pa
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_cart_not_found(checkout_service, tenant, address_factory, payment_method_factory, cart_factory):
+def test_checkout_cart_not_found(
+    checkout_service, tenant, address_factory, payment_method_factory, cart_factory
+):
     """Non-existent cart_id raises CartNotFound."""
     cart = cart_factory()
     address = address_factory(user_id=cart.user_id)
     pm = payment_method_factory()
     key = uuid.uuid4()
-    rh = compute_request_hash({
-        "cart_id": str(uuid.uuid4()),
-        "payment_method_id": str(pm.id),
-        "address_id": str(address.id),
-    })
+    rh = compute_request_hash(
+        {
+            "cart_id": str(uuid.uuid4()),
+            "payment_method_id": str(pm.id),
+            "address_id": str(address.id),
+        }
+    )
     with pytest.raises(CartNotFound):
         checkout_service.checkout(
             cart_id=uuid.uuid4(),
@@ -169,17 +181,24 @@ def test_checkout_already_checked_out(checkout_service, loaded_cart):
 
     # Second attempt with a NEW idempotency key must fail.
     with pytest.raises(CartAlreadyCheckedOut):
-        checkout_service.checkout(**_checkout_kwargs(cart, address, pm, key=uuid.uuid4()))
+        checkout_service.checkout(
+            **_checkout_kwargs(cart, address, pm, key=uuid.uuid4())
+        )
 
 
 @pytest.mark.django_db(transaction=True)
 def test_checkout_out_of_stock_does_not_deduct(
-    checkout_service, cart_factory, address_factory, payment_method_factory, product_factory
+    checkout_service,
+    cart_factory,
+    address_factory,
+    payment_method_factory,
+    product_factory,
 ):
     """OOS failure: stock unchanged, no Order, no Payment, no IdempotencyRecord."""
     cart = cart_factory()
     product = product_factory(price=Decimal("10.00"), stock=1)
     from apps.cart.services import add_product_to_cart
+
     add_product_to_cart(cart, product, quantity=2)  # wants 2, only 1 in stock
     cart.refresh_from_db()
     address = address_factory(user_id=cart.user_id)
@@ -219,9 +238,11 @@ def test_checkout_invalid_address(
 ):
     """Address belonging to a different user raises AddressNotFound."""
     from apps.addresses.models import Address
+
     cart = cart_factory()
     product = product_factory(stock=5)
     from apps.cart.services import add_product_to_cart
+
     add_product_to_cart(cart, product, quantity=1)
     cart.refresh_from_db()
     pm = payment_method_factory()
@@ -229,13 +250,18 @@ def test_checkout_invalid_address(
     # Create address owned by a DIFFERENT user.
     other_user = uuid.uuid4()
     address = Address.objects.create(
-        user_id=other_user, country="US", city="NYC", details="1 St",
+        user_id=other_user,
+        country="US",
+        city="NYC",
+        details="1 St",
     )
-    rh = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(pm.id),
-        "address_id": str(address.id),
-    })
+    rh = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(pm.id),
+            "address_id": str(address.id),
+        }
+    )
     with pytest.raises(AddressNotFound):
         checkout_service.checkout(
             cart_id=cart.id,
@@ -247,16 +273,16 @@ def test_checkout_invalid_address(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_invalid_payment_method(
-    checkout_service, loaded_cart
-):
+def test_checkout_invalid_payment_method(checkout_service, loaded_cart):
     """Non-existent payment_method_id raises PaymentMethodInvalid."""
     cart, address, _ = loaded_cart
-    rh = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(uuid.uuid4()),
-        "address_id": str(address.id),
-    })
+    rh = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(uuid.uuid4()),
+            "address_id": str(address.id),
+        }
+    )
     with pytest.raises(PaymentMethodInvalid):
         checkout_service.checkout(
             cart_id=cart.id,
@@ -292,6 +318,7 @@ def test_idempotent_replay_returns_same_order(checkout_service, loaded_cart):
 def test_idempotency_conflict_different_payload(checkout_service, loaded_cart):
     """Same key + different address → IdempotencyConflict (409)."""
     from apps.addresses.models import Address
+
     cart, address, pm = loaded_cart
     key = uuid.uuid4()
 
@@ -301,13 +328,18 @@ def test_idempotency_conflict_different_payload(checkout_service, loaded_cart):
 
     # Try again with a different address.
     other_address = Address.objects.create(
-        user_id=cart.user_id, country="US", city="LA", details="2nd St",
+        user_id=cart.user_id,
+        country="US",
+        city="LA",
+        details="2nd St",
     )
-    rh2 = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(pm.id),
-        "address_id": str(other_address.id),
-    })
+    rh2 = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(pm.id),
+            "address_id": str(other_address.id),
+        }
+    )
     with pytest.raises(IdempotencyConflict):
         checkout_service.checkout(
             cart_id=cart.id,
@@ -324,6 +356,7 @@ def test_idempotency_in_progress_concurrent(checkout_service, fake_redis, loaded
     cart, address, pm = loaded_cart
     key = uuid.uuid4()
     from apps.tenant.context import get_current_tenant
+
     tenant_id = get_current_tenant().id
     # Simulate a concurrent request that already set the sentinel.
     fake_redis.set(f"idem:{tenant_id}:{key}", "in_progress", ex=60)
@@ -339,10 +372,13 @@ def test_idempotency_in_progress_concurrent(checkout_service, fake_redis, loaded
 
 
 @pytest.mark.django_db(transaction=True)
-def test_lock_not_acquired_surfaces_correctly(checkout_service, fake_redis, loaded_cart):
+def test_lock_not_acquired_surfaces_correctly(
+    checkout_service, fake_redis, loaded_cart
+):
     """Pre-set lock key raises LockNotAcquired (maps to cart/locked in the view)."""
     cart, address, pm = loaded_cart
     from apps.tenant.context import get_current_tenant
+
     tenant_id = get_current_tenant().id
     lock_key = f"lock:checkout:{tenant_id}:{cart.id}"
     # Simulate a concurrent checkout holding the lock.
@@ -358,6 +394,7 @@ def test_lock_released_after_success(checkout_service, fake_redis, loaded_cart):
     """The lock key is absent after a successful checkout."""
     cart, address, pm = loaded_cart
     from apps.tenant.context import get_current_tenant
+
     tenant_id = get_current_tenant().id
     lock_key = f"lock:checkout:{tenant_id}:{cart.id}"
 
@@ -374,6 +411,7 @@ def test_lock_released_after_failure(checkout_service, fake_redis, loaded_cart):
     Product.objects.filter(pk=product.pk).update(stock=0)
 
     from apps.tenant.context import get_current_tenant
+
     tenant_id = get_current_tenant().id
     lock_key = f"lock:checkout:{tenant_id}:{cart.id}"
 
@@ -401,7 +439,7 @@ def test_stale_version_raises(checkout_service, fake_redis, loaded_cart):
     in-memory ``cart.version`` after the SELECT FOR UPDATE but before the
     UPDATE, then routing the checkout through the subclass.
     """
-    from apps.order.services import CheckoutService, CheckoutResult
+    from apps.order.services import CheckoutService
     from apps.core.idempotency import IdempotencyManager
 
     cart, address, pm = loaded_cart
@@ -412,7 +450,6 @@ def test_stale_version_raises(checkout_service, fake_redis, loaded_cart):
             # Run the real transaction up to the cart SELECT FOR UPDATE,
             # then artificially corrupt cart.version so the optimistic guard fails.
             from apps.cart.models import Cart as _Cart
-            from apps.addresses.models import Address as _Addr
 
             cart_id = kwargs["cart_id"]
             _cart = _Cart.objects.select_for_update().get(pk=cart_id)
@@ -420,6 +457,7 @@ def test_stale_version_raises(checkout_service, fake_redis, loaded_cart):
             _cart.version = 9999
             # Now trigger the version-guarded UPDATE directly to prove it fails.
             from django.db.models import F as _F
+
             rows = _Cart.objects.filter(
                 pk=_cart.pk,
                 version=_cart.version,
@@ -453,8 +491,6 @@ def test_coupon_revalidation_failure_rolls_back(
     checkout_service, loaded_cart, product_factory
 ):
     """An expired coupon causes the whole checkout to roll back."""
-    from apps.coupon.models import Coupon
-    from apps.coupon.services import CouponService
     from django.utils import timezone
     import datetime
 

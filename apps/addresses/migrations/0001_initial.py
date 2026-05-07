@@ -9,7 +9,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
@@ -46,7 +45,9 @@ class Migration(migrations.Migration):
                 # Soft-delete — NULL = live
                 (
                     "deleted_at",
-                    models.DateTimeField(blank=True, db_index=True, default=None, null=True),
+                    models.DateTimeField(
+                        blank=True, db_index=True, default=None, null=True
+                    ),
                 ),
                 # Tenant FK
                 (

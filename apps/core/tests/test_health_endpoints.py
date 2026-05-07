@@ -79,15 +79,16 @@ def test_ready_logs_dependency_failure_with_request_id(client, caplog, monkeypat
     assert response.status_code == 503
 
     failure_records = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if getattr(r, "action", None) == "readiness.dependency_failed"
     ]
-    assert failure_records, (
-        "Expected at least one ERROR log with action='readiness.dependency_failed'"
-    )
+    assert (
+        failure_records
+    ), "Expected at least one ERROR log with action='readiness.dependency_failed'"
     for record in failure_records:
         assert record.levelno == logging.ERROR
         request_id = getattr(record, "request_id", None)
-        assert request_id and request_id != "-", (
-            f"request_id must be bound on readiness failure records, got {request_id!r}"
-        )
+        assert (
+            request_id and request_id != "-"
+        ), f"request_id must be bound on readiness failure records, got {request_id!r}"

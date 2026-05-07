@@ -11,7 +11,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies: list = []
@@ -44,7 +43,10 @@ class Migration(migrations.Migration):
                         max_length=12,
                     ),
                 ),
-                ("response_status", models.PositiveSmallIntegerField(blank=True, null=True)),
+                (
+                    "response_status",
+                    models.PositiveSmallIntegerField(blank=True, null=True),
+                ),
                 ("response_body", models.JSONField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),

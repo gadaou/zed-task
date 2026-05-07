@@ -95,6 +95,7 @@ class TenantUserScopedThrottle(BaseThrottle):
         key = f"throttle:{scope}:{tenant_id}:{user_id}"
 
         from apps.core.redis import get_redis_client
+
         r = get_redis_client()
         pipe = r.pipeline()
         pipe.incr(key)

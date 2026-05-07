@@ -34,11 +34,13 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.cart.models import Cart
 from apps.core.exceptions import (
     IdempotencyConflict,
     IdempotencyInProgress,
     LockNotAcquired,
 )
+from apps.core.idempotency import compute_request_hash
 from apps.core.openapi import (
     IDEMPOTENCY_KEY_HEADER,
     TENANT_DOMAIN_HEADER,
@@ -48,6 +50,18 @@ from apps.core.openapi import (
     checkout_response_examples,
     problem_response,
 )
+from apps.core.responses import map_exception as _map_exception
+from apps.core.responses import problem as _problem
+from apps.core.responses import validation_problem as _validation_problem
+from apps.core.throttling import TenantUserScopedThrottle
+from apps.coupon.exceptions import CouponDomainError
+from apps.order.exceptions import (
+    OrderDomainError,
+)
+from apps.order.serializers import CheckoutRequestSerializer, CheckoutResponseSerializer
+from apps.order.services import CheckoutService
+
+logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_RESPONSE = problem_response(
     429,
@@ -59,32 +73,12 @@ _RATE_LIMIT_RESPONSE = problem_response(
         "10 requests per minute. Retry after the fixed window resets."
     ),
 )
-from apps.core.responses import map_exception as _map_exception
-from apps.core.responses import problem as _problem
-from apps.core.responses import validation_problem as _validation_problem
-from apps.core.throttling import TenantUserScopedThrottle
-from apps.coupon.exceptions import CouponDomainError
-from apps.order.exceptions import (
-    AddressNotFound,
-    CartAlreadyCheckedOut,
-    CartEmpty,
-    CartNotFound,
-    CartStaleVersion,
-    OrderDomainError,
-    PaymentMethodInvalid,
-    ProductOutOfStock,
-)
-from apps.order.serializers import CheckoutRequestSerializer, CheckoutResponseSerializer
-from apps.order.services import CheckoutService
-from apps.core.idempotency import compute_request_hash
-from apps.cart.models import Cart
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Checkout view
 # ---------------------------------------------------------------------------
+
 
 class CheckoutView(APIView):
     """``POST /v1/carts/{cart_id}/checkout``
@@ -330,11 +324,13 @@ class CheckoutView(APIView):
         # 3. Compute request hash for conflict detection.
         # ------------------------------------------------------------------
         data = serializer.validated_data
-        request_hash = compute_request_hash({
-            "cart_id": str(cart_id),
-            "payment_method_id": str(data["payment_method_id"]),
-            "address_id": str(data["address_id"]),
-        })
+        request_hash = compute_request_hash(
+            {
+                "cart_id": str(cart_id),
+                "payment_method_id": str(data["payment_method_id"]),
+                "address_id": str(data["address_id"]),
+            }
+        )
 
         # ------------------------------------------------------------------
         # 4. Dispatch to CheckoutService.
@@ -360,14 +356,16 @@ class CheckoutView(APIView):
         # ------------------------------------------------------------------
         # 5. Serialise and return.
         # ------------------------------------------------------------------
-        out = CheckoutResponseSerializer({
-            "order_id": result.order_id,
-            "payment_id": result.payment_id,
-            "payment_status": result.payment_status,
-            "total": result.total,
-            "currency": result.currency,
-            "company_name": result.company_name,
-            "tax_number": result.tax_number,
-            "purchase_order_reference": result.purchase_order_reference,
-        })
+        out = CheckoutResponseSerializer(
+            {
+                "order_id": result.order_id,
+                "payment_id": result.payment_id,
+                "payment_status": result.payment_status,
+                "total": result.total,
+                "currency": result.currency,
+                "company_name": result.company_name,
+                "tax_number": result.tax_number,
+                "purchase_order_reference": result.purchase_order_reference,
+            }
+        )
         return Response(out.data, status=result.http_status)

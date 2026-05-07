@@ -21,7 +21,9 @@ def test_request_id_returned_when_absent(client):
     """GET /health/ returns X-Request-Id even when the client does not send one."""
     response = client.get("/health/")
     assert response.status_code == 200
-    assert "X-Request-Id" in response, "X-Request-Id header must be present in the response"
+    assert (
+        "X-Request-Id" in response
+    ), "X-Request-Id header must be present in the response"
     rid = response["X-Request-Id"]
     assert rid, "X-Request-Id must not be empty"
 
@@ -82,7 +84,9 @@ def test_request_id_appears_in_log_records(client, caplog, monkeypatch):
 
     assert response.status_code == 503
     # The RequestContextFilter injects request_id onto every LogRecord.
-    matching = [r for r in caplog.records if getattr(r, "request_id", None) == custom_id]
+    matching = [
+        r for r in caplog.records if getattr(r, "request_id", None) == custom_id
+    ]
     assert matching, (
         f"Expected at least one log record with request_id={custom_id!r}. "
         f"Records: {[(r.name, getattr(r, 'request_id', '<missing>')) for r in caplog.records]}"

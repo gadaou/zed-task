@@ -376,9 +376,9 @@ class CouponService:
         if self._stacking_policy is StackingPolicy.UNLIMITED:
             return
 
-        existing: Iterable[CartCoupon] = (
-            CartCoupon.objects.filter(cart=cart).select_related("coupon")
-        )
+        existing: Iterable[CartCoupon] = CartCoupon.objects.filter(
+            cart=cart
+        ).select_related("coupon")
 
         if self._stacking_policy is StackingPolicy.SINGLE_ONLY:
             conflict = next(iter(existing), None)
@@ -438,9 +438,7 @@ class CouponService:
         for any future code path that fetches the coupon without a lock.
         """
         if coupon.usage_limit is None:
-            Coupon.objects.filter(pk=coupon.pk).update(
-                used_count=F("used_count") + 1
-            )
+            Coupon.objects.filter(pk=coupon.pk).update(used_count=F("used_count") + 1)
             return
 
         rows = Coupon.objects.filter(

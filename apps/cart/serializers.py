@@ -172,11 +172,13 @@ class SetBusinessDetailsSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        if not any([
-            attrs.get("company_name"),
-            attrs.get("tax_number"),
-            attrs.get("purchase_order_reference"),
-        ]):
+        if not any(
+            [
+                attrs.get("company_name"),
+                attrs.get("tax_number"),
+                attrs.get("purchase_order_reference"),
+            ]
+        ):
             raise serializers.ValidationError(
                 "At least one of company_name, tax_number, or "
                 "purchase_order_reference must be provided."
@@ -256,15 +258,21 @@ class CartReadSerializer(serializers.Serializer):
     status = serializers.CharField(read_only=True)
     currency = serializers.CharField(read_only=True)
     total_price = serializers.DecimalField(
-        max_digits=14, decimal_places=2, read_only=True,
+        max_digits=14,
+        decimal_places=2,
+        read_only=True,
         help_text="Sum of (quantity × price_snapshot) before discounts.",
     )
     discount_amount = serializers.DecimalField(
-        max_digits=14, decimal_places=2, read_only=True,
+        max_digits=14,
+        decimal_places=2,
+        read_only=True,
         help_text="Total discount from all applied coupons.",
     )
     total_after_discount = serializers.DecimalField(
-        max_digits=14, decimal_places=2, read_only=True,
+        max_digits=14,
+        decimal_places=2,
+        read_only=True,
         help_text="Payable amount: total_price − discount_amount (clamped at 0).",
     )
     version = serializers.IntegerField(

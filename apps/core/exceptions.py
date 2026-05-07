@@ -75,6 +75,7 @@ def problem_json_handler(exc, context):
 
     if isinstance(exc, Throttled):
         from apps.core.responses import problem
+
         return problem(
             "rate-limit/exceeded",
             "Too many requests",

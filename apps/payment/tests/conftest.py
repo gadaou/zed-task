@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import pytest
+
+if TYPE_CHECKING:
+    from apps.payment.models import Payment
 
 from apps.payment.gateways.dummy import (
     DummyFailingGateway,

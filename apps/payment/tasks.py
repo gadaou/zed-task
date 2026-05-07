@@ -92,9 +92,7 @@ def authorize_payment(self, payment_id: str) -> dict:
     # ------------------------------------------------------------------
     try:
         payment = (
-            Payment.objects.all_tenants()
-            .select_related("tenant")
-            .get(pk=payment_uuid)
+            Payment.objects.all_tenants().select_related("tenant").get(pk=payment_uuid)
         )
     except Payment.DoesNotExist:
         logger.error(
@@ -227,11 +225,7 @@ def process_payment(self, order_id: str) -> dict:
     # Load the order cross-tenant to resolve the tenant context.
     # ------------------------------------------------------------------
     try:
-        order = (
-            Order.objects.all_tenants()
-            .select_related("tenant")
-            .get(pk=order_uuid)
-        )
+        order = Order.objects.all_tenants().select_related("tenant").get(pk=order_uuid)
     except Order.DoesNotExist:
         logger.error(
             "process_payment: Order %s not found — skipping.",
@@ -244,9 +238,7 @@ def process_payment(self, order_id: str) -> dict:
         # Resolve the Payment linked to the order's cart.
         # ------------------------------------------------------------------
         payment = (
-            Payment.objects.filter(cart=order.cart)
-            .order_by("-created_at")
-            .first()
+            Payment.objects.filter(cart=order.cart).order_by("-created_at").first()
         )
 
         if payment is None:

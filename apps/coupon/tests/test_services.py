@@ -160,9 +160,7 @@ class TestApplyHappyPath:
         assert updated.total_after_discount == Decimal("85.00")
         assert CartCoupon.objects.filter(cart=updated).count() == 2
 
-    def test_percentage_on_empty_cart(
-        self, cart_factory, coupon_factory
-    ) -> None:
+    def test_percentage_on_empty_cart(self, cart_factory, coupon_factory) -> None:
         """Edge case: applying to a 0.00 cart yields a 0.00 discount but still records the application."""
         cart = cart_factory()
         coupon_factory(
@@ -185,9 +183,7 @@ class TestApplyHappyPath:
 
 
 class TestApplyInvalid:
-    def test_unknown_coupon_code_raises_not_found(
-        self, cart_factory
-    ) -> None:
+    def test_unknown_coupon_code_raises_not_found(self, cart_factory) -> None:
         cart = cart_factory()
         with pytest.raises(CouponNotFound):
             CouponService().apply_coupon_to_cart(cart, "DOES-NOT-EXIST")
@@ -257,18 +253,14 @@ class TestApplyInvalid:
         updated = CouponService().apply_coupon_to_cart(cart, "SAONLY")
         assert CartCoupon.objects.filter(cart=updated).count() == 1
 
-    def test_usage_limit_at_cap_raises(
-        self, cart_factory, coupon_factory
-    ) -> None:
+    def test_usage_limit_at_cap_raises(self, cart_factory, coupon_factory) -> None:
         cart = cart_factory()
         coupon_factory(code="ONCE", usage_limit=1, used_count=1)
 
         with pytest.raises(CouponLimitReached):
             CouponService().apply_coupon_to_cart(cart, "ONCE")
 
-    def test_expired_window_raises(
-        self, cart_factory, coupon_factory
-    ) -> None:
+    def test_expired_window_raises(self, cart_factory, coupon_factory) -> None:
         cart = cart_factory()
         coupon_factory(
             code="OLD",
@@ -457,9 +449,10 @@ class TestUsageLimitConcurrency:
         Pre-conditions the coupon row to ``used_count == usage_limit`` and
         verifies the helper refuses without mutating the row.
         """
-        cart = cart_factory()
         # No real cart-coupon flow here — we want to exercise the guard
-        # primitive in isolation.
+        # primitive in isolation. The cart row is created for fixture parity
+        # with the surrounding tests; the test does not reference it directly.
+        cart_factory()
         coupon = coupon_factory(code="CAP", usage_limit=2, used_count=2)
 
         service = CouponService()
@@ -595,7 +588,11 @@ class TestStackingPolicy:
         product = product_factory(price=Decimal("100.00"))
         add_product_to_cart(cart, product, quantity=1)
 
-        coupon_factory(code="PCT10", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("10"))
+        coupon_factory(
+            code="PCT10",
+            discount_type=Coupon.DiscountType.PERCENTAGE,
+            value=Decimal("10"),
+        )
         coupon_factory(
             code="FIX5",
             discount_type=Coupon.DiscountType.FIXED,
@@ -618,8 +615,16 @@ class TestStackingPolicy:
         product = product_factory(price=Decimal("100.00"))
         add_product_to_cart(cart, product, quantity=1)
 
-        coupon_factory(code="P10", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("10"))
-        coupon_factory(code="P20", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("20"))
+        coupon_factory(
+            code="P10",
+            discount_type=Coupon.DiscountType.PERCENTAGE,
+            value=Decimal("10"),
+        )
+        coupon_factory(
+            code="P20",
+            discount_type=Coupon.DiscountType.PERCENTAGE,
+            value=Decimal("20"),
+        )
 
         service = CouponService()
         service.apply_coupon_to_cart(cart, "P10")
@@ -669,7 +674,11 @@ class TestStackingPolicy:
         product = product_factory(price=Decimal("100.00"))
         add_product_to_cart(cart, product, quantity=1)
 
-        coupon_factory(code="P10", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("10"))
+        coupon_factory(
+            code="P10",
+            discount_type=Coupon.DiscountType.PERCENTAGE,
+            value=Decimal("10"),
+        )
         coupon_factory(
             code="F5",
             discount_type=Coupon.DiscountType.FIXED,
@@ -693,8 +702,14 @@ class TestStackingPolicy:
         product = product_factory(price=Decimal("100.00"))
         add_product_to_cart(cart, product, quantity=1)
 
-        coupon_factory(code="P10", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("10"))
-        coupon_factory(code="P5", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("5"))
+        coupon_factory(
+            code="P10",
+            discount_type=Coupon.DiscountType.PERCENTAGE,
+            value=Decimal("10"),
+        )
+        coupon_factory(
+            code="P5", discount_type=Coupon.DiscountType.PERCENTAGE, value=Decimal("5")
+        )
 
         service = CouponService(stacking_policy=StackingPolicy.UNLIMITED)
         service.apply_coupon_to_cart(cart, "P10")

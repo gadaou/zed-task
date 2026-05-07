@@ -78,7 +78,9 @@ class Address(TenantAwareModel):
     # Soft-delete timestamp.  NULL = live; non-NULL = logically deleted.
     # Set by the service layer; never hard-deleted.
     # db_index=True adds a simple index on deleted_at to support sweep queries.
-    deleted_at = models.DateTimeField(null=True, blank=True, default=None, db_index=True)
+    deleted_at = models.DateTimeField(
+        null=True, blank=True, default=None, db_index=True
+    )
 
     class Meta:
         verbose_name = "Address"

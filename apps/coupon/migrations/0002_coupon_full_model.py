@@ -10,7 +10,6 @@
 # The stub Coupon had only (id, code, tenant, created_at, updated_at) so every
 # new field can be added directly at its target nullability.
 
-import uuid
 from decimal import Decimal
 
 from django.db import migrations, models
@@ -18,7 +17,6 @@ from django.db.models import F
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("coupon", "0001_initial"),
         ("tenant", "0001_initial"),
@@ -137,21 +135,24 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="coupon",
             constraint=models.CheckConstraint(
-                check=models.Q(discount_type="FIXED") | models.Q(value__lte=Decimal("100")),
+                check=models.Q(discount_type="FIXED")
+                | models.Q(value__lte=Decimal("100")),
                 name="ck_coupon_pct_lte_100",
             ),
         ),
         migrations.AddConstraint(
             model_name="coupon",
             constraint=models.CheckConstraint(
-                check=models.Q(usage_limit__isnull=True) | models.Q(used_count__lte=F("usage_limit")),
+                check=models.Q(usage_limit__isnull=True)
+                | models.Q(used_count__lte=F("usage_limit")),
                 name="ck_coupon_used_within_limit",
             ),
         ),
         migrations.AddConstraint(
             model_name="coupon",
             constraint=models.CheckConstraint(
-                check=models.Q(currency__isnull=True) | models.Q(currency__regex=r"^[A-Z]{3}$"),
+                check=models.Q(currency__isnull=True)
+                | models.Q(currency__regex=r"^[A-Z]{3}$"),
                 name="ck_coupon_currency_iso4217",
             ),
         ),

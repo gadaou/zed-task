@@ -136,9 +136,7 @@ class Command(BaseCommand):
             defaults={"name": DEMO_TENANT_NAME, "is_active": True},
         )
 
-    def _seed_products(
-        self, tenant: Tenant
-    ) -> tuple[list[Product], list[bool]]:
+    def _seed_products(self, tenant: Tenant) -> tuple[list[Product], list[bool]]:
         products = []
         created_flags = []
         for spec in DEMO_PRODUCTS:
@@ -155,9 +153,7 @@ class Command(BaseCommand):
             created_flags.append(created)
         return products, created_flags
 
-    def _seed_coupons(
-        self, tenant: Tenant
-    ) -> tuple[list[Coupon], list[bool]]:
+    def _seed_coupons(self, tenant: Tenant) -> tuple[list[Coupon], list[bool]]:
         coupons = []
         created_flags = []
         for spec in DEMO_COUPONS:
@@ -206,9 +202,7 @@ class Command(BaseCommand):
         return obj, True
 
     @transaction.atomic
-    def _seed_cart(
-        self, tenant: Tenant, products: list[Product]
-    ) -> tuple[Cart, bool]:
+    def _seed_cart(self, tenant: Tenant, products: list[Product]) -> tuple[Cart, bool]:
         existing = (
             Cart.objects.all_tenants()
             .filter(tenant=tenant, user_id=DEMO_CUSTOMER_ID, status=Cart.Status.ACTIVE)
@@ -233,7 +227,9 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
 
     def _print_status(self, kind: str, identifier: str, created: bool) -> None:
-        action = self.style.SUCCESS("created") if created else self.style.WARNING("exists")
+        action = (
+            self.style.SUCCESS("created") if created else self.style.WARNING("exists")
+        )
         self.stdout.write(f"  {kind:<16} {identifier:<50} [{action}]")
 
     def _print_summary(
@@ -261,15 +257,17 @@ class Command(BaseCommand):
         self.stdout.write("\n  Coupons:")
         for c in coupons:
             spec = next(s for s in DEMO_COUPONS if s["code"] == c.code)
-            self.stdout.write(
-                f"    {c.code:<12}  {spec['description']}"
-            )
+            self.stdout.write(f"    {c.code:<12}  {spec['description']}")
 
         self.stdout.write(f"\n  Address ID     : {address.id}")
-        self.stdout.write(f"  PaymentMethod  : {payment_method.id}  (gateway: {payment_method.gateway_slug})")
+        self.stdout.write(
+            f"  PaymentMethod  : {payment_method.id}  (gateway: {payment_method.gateway_slug})"
+        )
 
         if cart:
-            self.stdout.write(f"  Cart ID        : {self.style.HTTP_INFO(str(cart.id))}")
+            self.stdout.write(
+                f"  Cart ID        : {self.style.HTTP_INFO(str(cart.id))}"
+            )
             self.stdout.write(f"  Cart total     : USD {cart.total_price}")
 
         self.stdout.write("")
@@ -292,14 +290,14 @@ class Command(BaseCommand):
 
             apply_coupon = textwrap.dedent(f"""\
                 # Optional: apply the 10% coupon before checkout
-                curl -s -X POST http://localhost:8000/api/v1/carts/{cart.id}/coupons/ \\
+                curl -s -X POST http://localhost:8000/api/v1/cart/add-coupon/ \\
                   -H "Content-Type: application/json" \\
                   -H "X-Tenant-Domain: {tenant.domain}" \\
-                  -d '{{"coupon_code": "DEMO10"}}' | python3 -m json.tool
+                  -H "X-User-Id: {DEMO_CUSTOMER_ID}" \\
+                  -d '{{"code": "DEMO10"}}' | python3 -m json.tool
             """)
             self.stdout.write(apply_coupon)
         else:
-            cart_placeholder = "<cart-uuid>"
             self.stdout.write(
                 f"\n  Re-run without --no-cart to get a ready-to-use cart ID.\n"
                 f"  Or create a cart and use address_id={address.id} "

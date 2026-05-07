@@ -112,6 +112,8 @@ Full interface contract and extension guide: [`docs/payment-gateways.md`](docs/p
 
 ## 6. API Reference
 
+The OpenAPI schema is generated dynamically by drf-spectacular at `/api/schema/`. Swagger UI is available at `/api/docs/`. No static OpenAPI YAML file is committed because the generated schema is the source of truth.
+
 | | URL |
 |---|---|
 | Swagger UI | `http://localhost:8000/api/docs/` |

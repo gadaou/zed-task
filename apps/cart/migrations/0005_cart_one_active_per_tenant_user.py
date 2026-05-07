@@ -18,7 +18,6 @@ from django.db.models import Q
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("cart", "0004_cart_selected_address_payment_method"),
     ]

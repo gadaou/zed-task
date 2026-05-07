@@ -144,17 +144,13 @@ class IdempotencyManager:
             IdempotencyConflict:   Same key, different hash.
             IdempotencyInProgress: Same key, still being processed.
         """
-        redis_key = _INPROGRESS_KEY_TEMPLATE.format(
-            tenant_id=tenant_id, key=key
-        )
+        redis_key = _INPROGRESS_KEY_TEMPLATE.format(tenant_id=tenant_id, key=key)
 
         # 1. Check the durable Postgres record first (outside the Redis check)
         #    so a completed replay is returned even if the in-progress sentinel
         #    has already expired.
         try:
-            record = IdempotencyRecord.objects.get(
-                tenant_id=tenant_id, key=key
-            )
+            record = IdempotencyRecord.objects.get(tenant_id=tenant_id, key=key)
             if record.request_hash != request_hash:
                 logger.warning(
                     "idempotency.conflict",
@@ -212,9 +208,7 @@ class IdempotencyManager:
             IdempotencyInProgress: If the sentinel is already set (a concurrent
                 request snuck in between ``check_for_replay`` and this call).
         """
-        redis_key = _INPROGRESS_KEY_TEMPLATE.format(
-            tenant_id=tenant_id, key=key
-        )
+        redis_key = _INPROGRESS_KEY_TEMPLATE.format(tenant_id=tenant_id, key=key)
         set_ok = self._client.set(
             redis_key,
             "in_progress",
@@ -233,9 +227,7 @@ class IdempotencyManager:
         the client may retry after a transient failure.  Errors are logged but
         not raised — the sentinel will expire via its TTL regardless.
         """
-        redis_key = _INPROGRESS_KEY_TEMPLATE.format(
-            tenant_id=tenant_id, key=key
-        )
+        redis_key = _INPROGRESS_KEY_TEMPLATE.format(tenant_id=tenant_id, key=key)
         try:
             self._client.delete(redis_key)
         except Exception:

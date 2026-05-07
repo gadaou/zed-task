@@ -75,7 +75,9 @@ def _check_redis() -> tuple[bool, str]:
 @permission_classes([permissions.AllowAny])
 def health(_request: Request) -> Response:
     """Liveness endpoint — no external dependency checks."""
-    return Response({"status": "ok", "service": "cart-system"}, status=status.HTTP_200_OK)
+    return Response(
+        {"status": "ok", "service": "cart-system"}, status=status.HTTP_200_OK
+    )
 
 
 @extend_schema(
@@ -115,7 +117,10 @@ def health(_request: Request) -> Response:
                         "type": "object",
                         "properties": {
                             "postgres": {"type": "string", "example": "ok"},
-                            "redis": {"type": "string", "example": "Error 111 connecting..."},
+                            "redis": {
+                                "type": "string",
+                                "example": "Error 111 connecting...",
+                            },
                         },
                     },
                 },

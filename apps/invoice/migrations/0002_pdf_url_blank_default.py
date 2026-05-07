@@ -4,20 +4,21 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('invoice', '0001_initial'),
+        ("invoice", "0001_initial"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='invoice',
-            name='pdf_url',
-            field=models.CharField(blank=True, default='', max_length=512),
+            model_name="invoice",
+            name="pdf_url",
+            field=models.CharField(blank=True, default="", max_length=512),
         ),
         migrations.AlterField(
-            model_name='invoicesequence',
-            name='id',
-            field=models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID'),
+            model_name="invoicesequence",
+            name="id",
+            field=models.BigAutoField(
+                auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+            ),
         ),
     ]

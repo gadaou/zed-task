@@ -39,7 +39,9 @@ class TenantMiddlewareResolutionTests(TestCase):
         self.middleware = TenantMiddleware(_simple_view)
         self.tenant = _make_tenant("acme.example.com")
 
-    def _request(self, path: str = "/api/v1/carts/", domain: str | None = None) -> HttpRequest:
+    def _request(
+        self, path: str = "/api/v1/carts/", domain: str | None = None
+    ) -> HttpRequest:
         req = self.factory.get(path)
         if domain is not None:
             req.META["HTTP_X_TENANT_DOMAIN"] = domain
@@ -70,6 +72,7 @@ class TenantMiddlewareResolutionTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
+
         body = json.loads(response.content)
         self.assertIn("tenant/missing-header", body["type"])
         self.assertTrue(body["type"].startswith("https://"))
@@ -82,6 +85,7 @@ class TenantMiddlewareResolutionTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
+
         body = json.loads(response.content)
         self.assertIn("tenant/not-found", body["type"])
         self.assertTrue(body["type"].startswith("https://"))
@@ -95,6 +99,7 @@ class TenantMiddlewareResolutionTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response["Content-Type"], "application/problem+json")
         import json
+
         body = json.loads(response.content)
         self.assertIn("tenant/disabled", body["type"])
         self.assertTrue(body["type"].startswith("https://"))
@@ -103,7 +108,14 @@ class TenantMiddlewareResolutionTests(TestCase):
 
 
 @override_settings(
-    TENANT_EXEMPT_PATHS=["/admin/", "/healthz", "/readyz", "/api/schema/", "/api/docs/", "/api/redoc/"]
+    TENANT_EXEMPT_PATHS=[
+        "/admin/",
+        "/healthz",
+        "/readyz",
+        "/api/schema/",
+        "/api/docs/",
+        "/api/redoc/",
+    ]
 )
 class TenantMiddlewareExemptPathTests(TestCase):
     def setUp(self) -> None:

@@ -256,8 +256,12 @@ def test_same_user_has_independent_active_cart_per_tenant() -> None:
 
     user_id = uuid.uuid4()
 
-    tenant_a = Tenant.objects.create(name="Tenant A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
-    tenant_b = Tenant.objects.create(name="Tenant B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
+    tenant_a = Tenant.objects.create(
+        name="Tenant A", domain=f"a-{uuid.uuid4().hex[:8]}.test"
+    )
+    tenant_b = Tenant.objects.create(
+        name="Tenant B", domain=f"b-{uuid.uuid4().hex[:8]}.test"
+    )
 
     with tenant_context(tenant_a):
         cart_a = get_or_create_active_cart(user_id)
@@ -280,8 +284,12 @@ def test_tenant_a_cannot_see_tenant_b_cart_via_get_active_cart() -> None:
 
     user_id = uuid.uuid4()
 
-    tenant_a = Tenant.objects.create(name="TA", domain=f"ta-{uuid.uuid4().hex[:8]}.test")
-    tenant_b = Tenant.objects.create(name="TB", domain=f"tb-{uuid.uuid4().hex[:8]}.test")
+    tenant_a = Tenant.objects.create(
+        name="TA", domain=f"ta-{uuid.uuid4().hex[:8]}.test"
+    )
+    tenant_b = Tenant.objects.create(
+        name="TB", domain=f"tb-{uuid.uuid4().hex[:8]}.test"
+    )
 
     with tenant_context(tenant_b):
         get_or_create_active_cart(user_id)
@@ -313,6 +321,8 @@ def test_checked_out_cart_does_not_block_new_active_cart(tenant) -> None:
     user_id = uuid.uuid4()
     Cart.objects.create(user_id=user_id, status=Cart.Status.CHECKED_OUT, currency="USD")
 
-    new_cart = Cart.objects.create(user_id=user_id, status=Cart.Status.ACTIVE, currency="USD")
+    new_cart = Cart.objects.create(
+        user_id=user_id, status=Cart.Status.ACTIVE, currency="USD"
+    )
 
     assert new_cart.pk is not None

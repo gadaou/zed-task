@@ -14,7 +14,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("order", "0001_initial"),
         ("cart", "0002_cart_full_model"),

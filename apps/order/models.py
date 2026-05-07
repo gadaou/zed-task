@@ -35,7 +35,7 @@ import uuid
 from decimal import Decimal
 
 from django.db import models
-from django.db.models import F, Q
+from django.db.models import Q
 
 from apps.addresses.models import Address
 from apps.cart.models import Cart

@@ -80,13 +80,17 @@ class PaymentGatewayContractTests:
         if self.expects_timeout or not self.expects_success:
             pytest.skip("Only applicable to success gateways")
         result = self.gateway.authorize_payment(self._order, self._pm)
-        assert result.reference, "Successful authorization must provide a non-empty reference"
+        assert (
+            result.reference
+        ), "Successful authorization must provide a non-empty reference"
 
     def test_authorize_failure_has_error_code(self):
         if self.expects_timeout or self.expects_success:
             pytest.skip("Only applicable to failing gateways")
         result = self.gateway.authorize_payment(self._order, self._pm)
-        assert result.error_code, "Failed authorization must provide a non-empty error_code"
+        assert (
+            result.error_code
+        ), "Failed authorization must provide a non-empty error_code"
 
     def test_capture_returns_capture_result(self):
         if self.expects_timeout:
@@ -125,7 +129,9 @@ class PaymentGatewayContractTests:
         """Gateway must accept an optional ``metadata`` dict and not blow up."""
         if self.expects_timeout:
             with pytest.raises(GatewayTimeout):
-                self.gateway.authorize_payment(self._order, self._pm, metadata={"ref": "abc"})
+                self.gateway.authorize_payment(
+                    self._order, self._pm, metadata={"ref": "abc"}
+                )
             return
         result = self.gateway.authorize_payment(
             self._order, self._pm, metadata={"merchant_ref": "ORDER-42"}

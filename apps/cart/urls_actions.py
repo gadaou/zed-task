@@ -39,28 +39,26 @@ app_name = "cart_actions"
 urlpatterns = [
     # GET /api/v1/cart/  — retrieve (or auto-create) the active cart
     path("", CartReadView.as_view(), name="read"),
-
     # POST /api/v1/cart/add-product/
     path("add-product/", AddProductView.as_view(), name="add-product"),
-
     # POST /api/v1/cart/remove-product/
     path("remove-product/", RemoveProductView.as_view(), name="remove-product"),
-
     # POST /api/v1/cart/add-coupon/
     path("add-coupon/", ApplyCouponView.as_view(), name="add-coupon"),
-
     # POST /api/v1/cart/remove-coupon/
     path("remove-coupon/", RemoveCouponView.as_view(), name="remove-coupon"),
-
     # POST /api/v1/cart/add-address/
     path("add-address/", AddAddressView.as_view(), name="add-address"),
-
     # POST /api/v1/cart/add-payment-method/
-    path("add-payment-method/", AddPaymentMethodView.as_view(), name="add-payment-method"),
-
+    path(
+        "add-payment-method/", AddPaymentMethodView.as_view(), name="add-payment-method"
+    ),
     # POST /api/v1/cart/set-business-details/
-    path("set-business-details/", SetBusinessDetailsView.as_view(), name="set-business-details"),
-
+    path(
+        "set-business-details/",
+        SetBusinessDetailsView.as_view(),
+        name="set-business-details",
+    ),
     # POST /api/v1/cart/checkout/
     path("checkout/", CartCheckoutView.as_view(), name="checkout"),
 ]

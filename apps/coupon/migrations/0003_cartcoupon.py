@@ -18,7 +18,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("cart", "0003_cart_discount_fields"),
         ("coupon", "0002_coupon_full_model"),

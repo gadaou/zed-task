@@ -67,11 +67,7 @@ def generate_invoice(self, order_id: str) -> dict:
     # Load the order cross-tenant to resolve the tenant context.
     # ------------------------------------------------------------------
     try:
-        order = (
-            Order.objects.all_tenants()
-            .select_related("tenant")
-            .get(pk=order_uuid)
-        )
+        order = Order.objects.all_tenants().select_related("tenant").get(pk=order_uuid)
     except Order.DoesNotExist:
         logger.error(
             "generate_invoice: Order %s not found — skipping.",

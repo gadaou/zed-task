@@ -75,10 +75,13 @@ class ProductNotFound(OrderDomainError):
 
     type = "product/not-found"
 
-    def __init__(self, product_id: UUID | None = None, detail: str = "", **extra: Any) -> None:
+    def __init__(
+        self, product_id: UUID | None = None, detail: str = "", **extra: Any
+    ) -> None:
         self.product_id = product_id
         super().__init__(
-            detail or (
+            detail
+            or (
                 f"product {product_id} not found in catalog"
                 if product_id
                 else "a product referenced by a cart item no longer exists"
@@ -93,10 +96,13 @@ class ProductOutOfStock(OrderDomainError):
 
     type = "product/out-of-stock"
 
-    def __init__(self, product_id: UUID | None = None, detail: str = "", **extra: Any) -> None:
+    def __init__(
+        self, product_id: UUID | None = None, detail: str = "", **extra: Any
+    ) -> None:
         self.product_id = product_id
         super().__init__(
-            detail or (
+            detail
+            or (
                 f"product {product_id} is out of stock"
                 if product_id
                 else "a product in this cart is out of stock"

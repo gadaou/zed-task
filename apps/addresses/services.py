@@ -23,7 +23,6 @@ two concurrent requests each see no existing default and both commit with
 
 from __future__ import annotations
 
-import uuid
 from uuid import UUID
 
 from django.db import transaction

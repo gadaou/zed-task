@@ -392,9 +392,7 @@ class TestEvaluationOrder:
             constraints={"allowed_countries": ["SA"]},
         )
         with pytest.raises(CouponExpired):
-            CouponValidator().validate(
-                coupon, ctx(now=now, customer_country="US")
-            )
+            CouponValidator().validate(coupon, ctx(now=now, customer_country="US"))
 
     def test_usage_limit_takes_priority_over_json_rules(self) -> None:
         coupon = make_coupon(

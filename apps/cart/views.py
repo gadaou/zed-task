@@ -89,8 +89,6 @@ from apps.core.responses import map_exception, problem, validation_problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.coupon.services import CouponService
 from apps.order.exceptions import (
-    CartEmpty,
-    CartNotFound,
     OrderDomainError,
 )
 from apps.order.serializers import CheckoutResponseSerializer
@@ -135,8 +133,6 @@ def _cart_response(cart) -> Response:
     """Prefetch related items and return a full ``CartReadSerializer`` response."""
     # Prefetch before serialization so ``get_items`` / ``get_applied_coupons``
     # don't issue N+1 queries.
-    from django.db.models import Prefetch
-    from apps.coupon.models import CartCoupon
 
     cart.items.prefetch_related()
     cart._prefetched_objects_cache = {}  # reset any stale cache
@@ -815,27 +811,27 @@ class CartCheckoutView(APIView):
 
         tenant_obj = get_current_tenant()
         if tenant_obj is not None:
-            _prior = (
-                IdempotencyRecord.objects
-                .filter(
-                    tenant_id=tenant_obj.id,
-                    key=idempotency_key,
-                    status=IdempotencyRecord.Status.SUCCEEDED,
-                )
-                .first()
-            )
+            _prior = IdempotencyRecord.objects.filter(
+                tenant_id=tenant_obj.id,
+                key=idempotency_key,
+                status=IdempotencyRecord.Status.SUCCEEDED,
+            ).first()
             if _prior is not None:
                 body = _prior.response_body or {}
-                out = CheckoutResponseSerializer({
-                    "order_id": body.get("order_id"),
-                    "payment_id": body.get("payment_id"),
-                    "payment_status": body.get("payment_status", "pending"),
-                    "total": body.get("total", "0.00"),
-                    "currency": body.get("currency", ""),
-                    "company_name": body.get("company_name", ""),
-                    "tax_number": body.get("tax_number", ""),
-                    "purchase_order_reference": body.get("purchase_order_reference", ""),
-                })
+                out = CheckoutResponseSerializer(
+                    {
+                        "order_id": body.get("order_id"),
+                        "payment_id": body.get("payment_id"),
+                        "payment_status": body.get("payment_status", "pending"),
+                        "total": body.get("total", "0.00"),
+                        "currency": body.get("currency", ""),
+                        "company_name": body.get("company_name", ""),
+                        "tax_number": body.get("tax_number", ""),
+                        "purchase_order_reference": body.get(
+                            "purchase_order_reference", ""
+                        ),
+                    }
+                )
                 return Response(out.data, status=_prior.response_status or 202)
 
         # Resolve the active cart.
@@ -858,11 +854,13 @@ class CartCheckoutView(APIView):
             )
 
         # Compute the request hash for idempotency conflict detection.
-        request_hash = compute_request_hash({
-            "cart_id": str(cart.id),
-            "address_id": str(cart.selected_address_id),
-            "payment_method_id": str(cart.selected_payment_method_id),
-        })
+        request_hash = compute_request_hash(
+            {
+                "cart_id": str(cart.id),
+                "address_id": str(cart.selected_address_id),
+                "payment_method_id": str(cart.selected_payment_method_id),
+            }
+        )
 
         service = CheckoutService()
         try:
@@ -882,14 +880,16 @@ class CartCheckoutView(APIView):
         ) as exc:
             return map_exception(exc)
 
-        out = CheckoutResponseSerializer({
-            "order_id": result.order_id,
-            "payment_id": result.payment_id,
-            "payment_status": result.payment_status,
-            "total": result.total,
-            "currency": result.currency,
-            "company_name": result.company_name,
-            "tax_number": result.tax_number,
-            "purchase_order_reference": result.purchase_order_reference,
-        })
+        out = CheckoutResponseSerializer(
+            {
+                "order_id": result.order_id,
+                "payment_id": result.payment_id,
+                "payment_status": result.payment_status,
+                "total": result.total,
+                "currency": result.currency,
+                "company_name": result.company_name,
+                "tax_number": result.tax_number,
+                "purchase_order_reference": result.purchase_order_reference,
+            }
+        )
         return Response(out.data, status=result.http_status)

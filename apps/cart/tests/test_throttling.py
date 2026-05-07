@@ -24,7 +24,6 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 
 from apps.addresses.models import Address
-from apps.cart.models import Cart
 from apps.catalog.models import Product
 from apps.payment.models import PaymentMethod
 
@@ -41,6 +40,7 @@ _ADD_PRODUCT = BASE + "/add-product/"
 @pytest.fixture
 def fake_redis():
     import fakeredis
+
     return fakeredis.FakeRedis(decode_responses=True)
 
 
@@ -131,13 +131,15 @@ def _setup_cart_for_checkout(api_client, tenant, user_id, product):
 
 
 @pytest.mark.django_db
-@override_settings(REST_FRAMEWORK={
-    **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
-    "DEFAULT_THROTTLE_RATES": {
-        "checkout": "3/minute",
-        "add_product": "60/minute",
-    },
-})
+@override_settings(
+    REST_FRAMEWORK={
+        **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
+        "DEFAULT_THROTTLE_RATES": {
+            "checkout": "3/minute",
+            "add_product": "60/minute",
+        },
+    }
+)
 def test_checkout_throttle_allows_within_limit(
     api_client, tenant, user_id, product, dispatched
 ):
@@ -163,13 +165,15 @@ def test_checkout_throttle_allows_within_limit(
 
 
 @pytest.mark.django_db
-@override_settings(REST_FRAMEWORK={
-    **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
-    "DEFAULT_THROTTLE_RATES": {
-        "checkout": "3/minute",
-        "add_product": "60/minute",
-    },
-})
+@override_settings(
+    REST_FRAMEWORK={
+        **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
+        "DEFAULT_THROTTLE_RATES": {
+            "checkout": "3/minute",
+            "add_product": "60/minute",
+        },
+    }
+)
 def test_checkout_throttle_blocks_on_excess(
     api_client, tenant, user_id, product, dispatched
 ):
@@ -205,13 +209,15 @@ def test_checkout_throttle_blocks_on_excess(
 
 
 @pytest.mark.django_db
-@override_settings(REST_FRAMEWORK={
-    **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
-    "DEFAULT_THROTTLE_RATES": {
-        "checkout": "10/minute",
-        "add_product": "3/minute",
-    },
-})
+@override_settings(
+    REST_FRAMEWORK={
+        **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
+        "DEFAULT_THROTTLE_RATES": {
+            "checkout": "10/minute",
+            "add_product": "3/minute",
+        },
+    }
+)
 def test_add_product_throttle_blocks_on_excess(api_client, tenant, user_id, product):
     """The 4th add-product call returns 429 when the limit is overridden to 3/minute."""
     for i in range(3):
@@ -240,13 +246,15 @@ def test_add_product_throttle_blocks_on_excess(api_client, tenant, user_id, prod
 
 
 @pytest.mark.django_db
-@override_settings(REST_FRAMEWORK={
-    **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
-    "DEFAULT_THROTTLE_RATES": {
-        "checkout": "10/minute",
-        "add_product": "2/minute",
-    },
-})
+@override_settings(
+    REST_FRAMEWORK={
+        **__import__("django.conf", fromlist=["settings"]).settings.REST_FRAMEWORK,
+        "DEFAULT_THROTTLE_RATES": {
+            "checkout": "10/minute",
+            "add_product": "2/minute",
+        },
+    }
+)
 def test_add_product_throttle_is_per_tenant(db, fake_redis, monkeypatch):
     """Throttle counters are isolated between tenants."""
     from apps.tenant.context import tenant_context
@@ -258,14 +266,22 @@ def test_add_product_throttle_is_per_tenant(db, fake_redis, monkeypatch):
     uid = uuid.uuid4()
 
     # Create two tenants and a product in each
-    tenant_a = Tenant.objects.create(name="Tenant A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
-    tenant_b = Tenant.objects.create(name="Tenant B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
+    tenant_a = Tenant.objects.create(
+        name="Tenant A", domain=f"a-{uuid.uuid4().hex[:8]}.test"
+    )
+    tenant_b = Tenant.objects.create(
+        name="Tenant B", domain=f"b-{uuid.uuid4().hex[:8]}.test"
+    )
 
     with tenant_context(tenant_a):
-        p_a = Product.objects.create(name="WidgetA", price=Decimal("5.00"), currency="USD", stock=50)
+        p_a = Product.objects.create(
+            name="WidgetA", price=Decimal("5.00"), currency="USD", stock=50
+        )
 
     with tenant_context(tenant_b):
-        p_b = Product.objects.create(name="WidgetB", price=Decimal("5.00"), currency="USD", stock=50)
+        p_b = Product.objects.create(
+            name="WidgetB", price=Decimal("5.00"), currency="USD", stock=50
+        )
 
     def _post_add(tenant, product_obj):
         return client.post(

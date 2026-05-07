@@ -10,8 +10,6 @@ import pytest
 
 from apps.addresses.models import Address
 from apps.cart.models import Cart
-from apps.catalog.models import Product
-from apps.cart.services import add_product_to_cart
 from apps.order.models import Order
 from apps.payment.models import PaymentMethod
 from apps.tenant.context import tenant_context

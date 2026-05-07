@@ -21,13 +21,11 @@ The ``X-Tenant-Domain`` header must be sent on every request because
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 
 import pytest
 from rest_framework.test import APIClient
 
 from apps.cart.services import add_product_to_cart
-from apps.catalog.models import Product
 from apps.order.models import Order
 
 
@@ -160,7 +158,10 @@ def test_checkout_idempotency_conflict(
 
     # Different address — triggers conflict.
     other_address = Address.objects.create(
-        user_id=cart.user_id, country="US", city="NY", details="2 Ave",
+        user_id=cart.user_id,
+        country="US",
+        city="NY",
+        details="2 Ave",
     )
     r2 = _post(api_client, cart.id, pm.id, other_address.id, key, tenant.domain)
     assert r2.status_code == 409
@@ -168,19 +169,29 @@ def test_checkout_idempotency_conflict(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_cart_not_found(api_client, tenant, address_factory, payment_method_factory):
+def test_checkout_cart_not_found(
+    api_client, tenant, address_factory, payment_method_factory
+):
     from apps.addresses.models import Address
+
     user_id = uuid.uuid4()
     address = Address.objects.create(
-        user_id=user_id, country="US", city="City", details="St",
+        user_id=user_id,
+        country="US",
+        city="City",
+        details="St",
     )
     pm = payment_method_factory()
-    resp = _post(api_client, uuid.uuid4(), pm.id, address.id, uuid.uuid4(), tenant.domain)
+    resp = _post(
+        api_client, uuid.uuid4(), pm.id, address.id, uuid.uuid4(), tenant.domain
+    )
     assert resp.status_code == 404
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_empty_cart_returns_422(api_client, cart_factory, address_factory, payment_method_factory, tenant):
+def test_checkout_empty_cart_returns_422(
+    api_client, cart_factory, address_factory, payment_method_factory, tenant
+):
     cart = cart_factory()
     address = address_factory(user_id=cart.user_id)
     pm = payment_method_factory()
@@ -192,7 +203,12 @@ def test_checkout_empty_cart_returns_422(api_client, cart_factory, address_facto
 
 @pytest.mark.django_db(transaction=True)
 def test_checkout_out_of_stock_returns_422(
-    api_client, cart_factory, product_factory, address_factory, payment_method_factory, tenant
+    api_client,
+    cart_factory,
+    product_factory,
+    address_factory,
+    payment_method_factory,
+    tenant,
 ):
     cart = cart_factory()
     product = product_factory(stock=1)

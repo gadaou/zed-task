@@ -81,9 +81,7 @@ class SeedDemoDataCreationTests(TestCase):
     def test_coupons_are_active(self):
         tenant = Tenant.objects.get(domain=DEMO_DOMAIN)
         inactive = (
-            Coupon.objects.all_tenants()
-            .filter(tenant=tenant, is_active=False)
-            .count()
+            Coupon.objects.all_tenants().filter(tenant=tenant, is_active=False).count()
         )
         self.assertEqual(inactive, 0)
 
@@ -91,7 +89,12 @@ class SeedDemoDataCreationTests(TestCase):
         tenant = Tenant.objects.get(domain=DEMO_DOMAIN)
         self.assertTrue(
             Address.objects.all_tenants()
-            .filter(tenant=tenant, user_id=DEMO_CUSTOMER_ID, is_default=True, deleted_at=None)
+            .filter(
+                tenant=tenant,
+                user_id=DEMO_CUSTOMER_ID,
+                is_default=True,
+                deleted_at=None,
+            )
             .exists()
         )
 
@@ -151,7 +154,12 @@ class SeedDemoDataIdempotencyTests(TestCase):
     def test_only_one_default_address(self):
         count = (
             Address.objects.all_tenants()
-            .filter(tenant=self._tenant(), user_id=DEMO_CUSTOMER_ID, is_default=True, deleted_at=None)
+            .filter(
+                tenant=self._tenant(),
+                user_id=DEMO_CUSTOMER_ID,
+                is_default=True,
+                deleted_at=None,
+            )
             .count()
         )
         self.assertEqual(count, 1)
@@ -167,7 +175,11 @@ class SeedDemoDataIdempotencyTests(TestCase):
     def test_only_one_active_cart(self):
         count = (
             Cart.objects.all_tenants()
-            .filter(tenant=self._tenant(), user_id=DEMO_CUSTOMER_ID, status=Cart.Status.ACTIVE)
+            .filter(
+                tenant=self._tenant(),
+                user_id=DEMO_CUSTOMER_ID,
+                status=Cart.Status.ACTIVE,
+            )
             .count()
         )
         self.assertEqual(count, 1)
@@ -233,7 +245,9 @@ class SeedDemoDataOutputTests(TestCase):
 
     def test_output_contains_payment_method_id(self):
         tenant = Tenant.objects.get(domain=DEMO_DOMAIN)
-        pm = PaymentMethod.objects.all_tenants().get(tenant=tenant, gateway_slug="dummy_success")
+        pm = PaymentMethod.objects.all_tenants().get(
+            tenant=tenant, gateway_slug="dummy_success"
+        )
         self.assertIn(str(pm.id), self.output)
 
     def test_output_contains_address_id(self):

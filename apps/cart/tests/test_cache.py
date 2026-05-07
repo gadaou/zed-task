@@ -69,9 +69,7 @@ def fake_redis_instance():
 @pytest.fixture
 def redis_client(fake_redis_instance, monkeypatch):
     """Monkeypatch the singleton so all cache + lock code uses the fake."""
-    monkeypatch.setattr(
-        "apps.core.redis.get_redis_client", lambda: fake_redis_instance
-    )
+    monkeypatch.setattr("apps.core.redis.get_redis_client", lambda: fake_redis_instance)
     return fake_redis_instance
 
 
@@ -238,7 +236,9 @@ def test_apply_coupon_invalidates_cache(tenant, user_id, product, coupon, redis_
 
 
 @pytest.mark.django_db(transaction=True)
-def test_remove_coupon_invalidates_cache(tenant, user_id, product, coupon, redis_client):
+def test_remove_coupon_invalidates_cache(
+    tenant, user_id, product, coupon, redis_client
+):
     """Removing a coupon DELs the cache entry."""
     cart = Cart.objects.create(user_id=user_id)
     add_product_to_cart(cart, product, quantity=1)
@@ -276,7 +276,9 @@ def test_set_address_invalidates_cache(tenant, user_id, address, redis_client):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_set_payment_method_invalidates_cache(tenant, user_id, payment_method, redis_client):
+def test_set_payment_method_invalidates_cache(
+    tenant, user_id, payment_method, redis_client
+):
     """Setting a payment method DELs the cache entry."""
     cart = Cart.objects.create(user_id=user_id)
     set_cart_cache(tenant.id, user_id, {"id": str(cart.id), "stub": True})

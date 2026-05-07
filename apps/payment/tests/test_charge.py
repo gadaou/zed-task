@@ -88,7 +88,9 @@ class _PluginGateway(PaymentGateway):
 
 
 def test_charge_result_is_frozen():
-    result = ChargeResult(success=True, reference="ref-1", amount=Decimal("10"), currency="USD")
+    result = ChargeResult(
+        success=True, reference="ref-1", amount=Decimal("10"), currency="USD"
+    )
     with pytest.raises((AttributeError, TypeError)):
         result.success = False  # type: ignore[misc]
 
@@ -147,7 +149,11 @@ def test_dummy_gateway_charge_custom_error_code():
     result = gw.charge(
         Decimal("20.00"),
         "USD",
-        {"decline": True, "error_code": "insufficient_funds", "error_message": "Not enough funds."},
+        {
+            "decline": True,
+            "error_code": "insufficient_funds",
+            "error_message": "Not enough funds.",
+        },
     )
 
     assert result.success is False

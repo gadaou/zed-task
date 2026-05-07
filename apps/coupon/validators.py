@@ -243,9 +243,7 @@ class CouponValidator:
 
 
 @CouponValidator.register("min_total")
-def _check_min_total(
-    coupon: Coupon, value: Any, ctx: CouponValidationContext
-) -> None:
+def _check_min_total(coupon: Coupon, value: Any, ctx: CouponValidationContext) -> None:
     """Cart subtotal must meet or exceed ``value`` (in cart currency).
 
     ``value`` may be any type ``Decimal`` accepts — int, str, float-as-string —
@@ -310,9 +308,7 @@ def _check_allowed_countries(
             f"coupon '{coupon.code}' allows no countries",
         )
 
-    customer_country = (
-        ctx.customer_country.upper() if ctx.customer_country else None
-    )
+    customer_country = ctx.customer_country.upper() if ctx.customer_country else None
     if customer_country is None:
         raise CouponConstraintFailed(
             "allowed_countries",

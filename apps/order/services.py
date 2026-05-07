@@ -132,12 +132,15 @@ class CheckoutService:
             payment_dispatcher or enqueue_authorize_payment
         )
         self._idem_manager = idem_manager
-        self._lock_ttl_ms = lock_ttl_ms if lock_ttl_ms is not None else settings.CHECKOUT_LOCK_TTL_MS
+        self._lock_ttl_ms = (
+            lock_ttl_ms if lock_ttl_ms is not None else settings.CHECKOUT_LOCK_TTL_MS
+        )
 
     @property
     def _redis_client(self) -> redis.Redis:
         if self._redis is None:
             from apps.core.redis import get_redis_client
+
             self._redis = get_redis_client()
         return self._redis
 
@@ -272,7 +275,11 @@ class CheckoutService:
                     reason=type(exc).__name__,
                     duration_ms=round((time.monotonic() - t0) * 1000),
                 )
-                incr("checkout.failed", reason=type(exc).__name__, tenant_id=str(tenant_id))
+                incr(
+                    "checkout.failed",
+                    reason=type(exc).__name__,
+                    tenant_id=str(tenant_id),
+                )
                 raise
         finally:
             # Always clear the in-progress sentinel so the client can retry
@@ -355,9 +362,7 @@ class CheckoutService:
         # ------------------------------------------------------------------
         # Step 6 — Empty-cart guard.
         # ------------------------------------------------------------------
-        items = list(
-            CartItem.objects.filter(cart=cart).select_related()
-        )
+        items = list(CartItem.objects.filter(cart=cart).select_related())
         if not items:
             raise CartEmpty(f"cart {cart_id} has no items")
 
@@ -404,17 +409,19 @@ class CheckoutService:
             purchase_order_reference=cart.purchase_order_reference,
         )
 
-        OrderItem.objects.bulk_create([
-            OrderItem(
-                tenant=order.tenant,
-                order=order,
-                product_id=item.product_id,
-                quantity=item.quantity,
-                unit_price=item.price_snapshot,
-                currency=item.currency,
-            )
-            for item in items
-        ])
+        OrderItem.objects.bulk_create(
+            [
+                OrderItem(
+                    tenant=order.tenant,
+                    order=order,
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    unit_price=item.price_snapshot,
+                    currency=item.currency,
+                )
+                for item in items
+            ]
+        )
 
         # ------------------------------------------------------------------
         # Step 10 — Mark cart CHECKED_OUT with optimistic-version guard.

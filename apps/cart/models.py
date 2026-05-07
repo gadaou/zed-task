@@ -308,7 +308,9 @@ class CartItem(TenantAwareModel):
                     .values_list("tenant_id", flat=True)
                     .first()
                 )
-            if cart_tenant_id is not None and str(cart_tenant_id) != str(self.tenant_id):
+            if cart_tenant_id is not None and str(cart_tenant_id) != str(
+                self.tenant_id
+            ):
                 raise ValidationError(
                     "CartItem tenant must match its parent Cart tenant. "
                     f"Expected {cart_tenant_id}, got {self.tenant_id}."

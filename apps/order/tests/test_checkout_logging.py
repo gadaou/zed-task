@@ -30,7 +30,9 @@ from apps.core.idempotency import compute_request_hash
 
 
 @pytest.fixture
-def loaded_cart_for_logging(cart_factory, product_factory, address_factory, payment_method_factory):
+def loaded_cart_for_logging(
+    cart_factory, product_factory, address_factory, payment_method_factory
+):
     """Cart with one item, address, and payment method — ready for checkout."""
     cart = cart_factory()
     product = product_factory(price=Decimal("20.00"), stock=5)
@@ -48,11 +50,13 @@ def loaded_cart_for_logging(cart_factory, product_factory, address_factory, paym
 
 def _checkout(service, cart, address, pm, idempotency_key=None):
     key = idempotency_key or uuid.uuid4()
-    request_hash = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(pm.id),
-        "address_id": str(address.id),
-    })
+    request_hash = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(pm.id),
+            "address_id": str(address.id),
+        }
+    )
     return service.checkout(
         cart_id=cart.id,
         payment_method_id=pm.id,
@@ -86,16 +90,15 @@ def test_checkout_completed_log_contains_request_id(
         reset_request_context(token)
 
     completed = [
-        r for r in caplog.records
-        if getattr(r, "action", None) == "checkout.completed"
+        r for r in caplog.records if getattr(r, "action", None) == "checkout.completed"
     ]
     assert completed, "Expected at least one 'checkout.completed' log record"
 
     for record in completed:
         rid = getattr(record, "request_id", None)
-        assert rid == test_rid, (
-            f"checkout.completed record has request_id={rid!r}, expected {test_rid!r}"
-        )
+        assert (
+            rid == test_rid
+        ), f"checkout.completed record has request_id={rid!r}, expected {test_rid!r}"
         assert getattr(record, "outcome", None) in ("success", "replay")
 
 
@@ -112,7 +115,9 @@ def test_checkout_started_log_emitted(
     with caplog.at_level(logging.INFO, logger="apps.order.services"):
         _checkout(checkout_service, cart, address, pm)
 
-    started = [r for r in caplog.records if getattr(r, "action", None) == "checkout.started"]
+    started = [
+        r for r in caplog.records if getattr(r, "action", None) == "checkout.started"
+    ]
     assert started, "Expected a 'checkout.started' log record before checkout.completed"
 
 
@@ -152,11 +157,13 @@ def test_checkout_lock_failed_log_and_metric(
     )
 
     key = uuid.uuid4()
-    request_hash = compute_request_hash({
-        "cart_id": str(cart.id),
-        "payment_method_id": str(pm.id),
-        "address_id": str(address.id),
-    })
+    request_hash = compute_request_hash(
+        {
+            "cart_id": str(cart.id),
+            "payment_method_id": str(pm.id),
+            "address_id": str(address.id),
+        }
+    )
 
     with caplog.at_level(logging.WARNING, logger="apps.order.services"):
         with pytest.raises(LockNotAcquired):
@@ -168,5 +175,9 @@ def test_checkout_lock_failed_log_and_metric(
                 request_hash=request_hash,
             )
 
-    lock_failed = [r for r in caplog.records if getattr(r, "action", None) == "checkout.lock_failed"]
+    lock_failed = [
+        r
+        for r in caplog.records
+        if getattr(r, "action", None) == "checkout.lock_failed"
+    ]
     assert lock_failed, "Expected a 'checkout.lock_failed' WARNING log record"

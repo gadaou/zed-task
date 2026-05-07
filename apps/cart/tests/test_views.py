@@ -51,6 +51,7 @@ def api_client(fake_redis, monkeypatch):
 @pytest.fixture
 def fake_redis():
     import fakeredis
+
     return fakeredis.FakeRedis(decode_responses=True)
 
 
@@ -366,6 +367,7 @@ def test_apply_coupon_missing_code(api_client, tenant, user_id):
 @pytest.mark.django_db(transaction=True)
 def test_remove_coupon_happy_path(api_client, tenant, user_id, product, coupon):
     from apps.coupon.services import CouponService
+
     cart = Cart.objects.create(user_id=user_id)
     add_product_to_cart(cart, product, quantity=2)
     CouponService().apply_coupon_to_cart(cart, coupon.code)
@@ -402,7 +404,11 @@ def test_remove_coupon_idempotent(api_client, tenant, user_id):
 def test_add_address_happy_path(api_client, tenant, user_id):
     resp = api_client.post(
         _ADD_ADDRESS,
-        data={"country": "US", "city": "Springfield", "details": "742 Evergreen Terrace"},
+        data={
+            "country": "US",
+            "city": "Springfield",
+            "details": "742 Evergreen Terrace",
+        },
         format="json",
         **_headers(tenant.domain, user_id),
     )
@@ -550,7 +556,9 @@ def test_checkout_invalid_idempotency_key(api_client, tenant, user_id, ready_car
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_no_selected_address(api_client, tenant, user_id, product, payment_method):
+def test_checkout_no_selected_address(
+    api_client, tenant, user_id, product, payment_method
+):
     cart = Cart.objects.create(user_id=user_id)
     add_product_to_cart(cart, product, quantity=1)
     cart.selected_payment_method = payment_method
@@ -568,7 +576,9 @@ def test_checkout_no_selected_address(api_client, tenant, user_id, product, paym
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_no_selected_payment_method(api_client, tenant, user_id, product, address):
+def test_checkout_no_selected_payment_method(
+    api_client, tenant, user_id, product, address
+):
     cart = Cart.objects.create(user_id=user_id)
     add_product_to_cart(cart, product, quantity=1)
     cart.selected_address = address
@@ -599,7 +609,9 @@ def test_checkout_missing_user_id(api_client, tenant, ready_cart):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_idempotent_replay(api_client, tenant, user_id, ready_cart, dispatched):
+def test_checkout_idempotent_replay(
+    api_client, tenant, user_id, ready_cart, dispatched
+):
     key = str(uuid.uuid4())
 
     r1 = api_client.post(
@@ -667,7 +679,9 @@ def test_cart_id_checkout_succeeds_for_correct_user_id(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_checkout_empty_cart_returns_422(api_client, tenant, user_id, address, payment_method):
+def test_checkout_empty_cart_returns_422(
+    api_client, tenant, user_id, address, payment_method
+):
     """CartCheckoutView maps CartEmpty → 422 cart/empty for the action endpoint."""
     cart = Cart.objects.create(user_id=user_id)
     cart.selected_address = address
@@ -718,10 +732,11 @@ def test_checkout_oos_returns_422(api_client, tenant, user_id, address, payment_
 def test_tenant_a_cannot_checkout_tenant_b_cart(api_client, monkeypatch):
     """A cart_id that belongs to tenant B is not found when queried under tenant A."""
     import fakeredis
-    monkeypatch.setattr("apps.core.redis.get_redis_client", lambda: fakeredis.FakeRedis(decode_responses=True))
 
-    from apps.tenant.models import Tenant
-    from apps.tenant.context import tenant_context
+    monkeypatch.setattr(
+        "apps.core.redis.get_redis_client",
+        lambda: fakeredis.FakeRedis(decode_responses=True),
+    )
 
     tenant_a = Tenant.objects.create(name="A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
     tenant_b = Tenant.objects.create(name="B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
@@ -754,8 +769,6 @@ def test_tenant_a_cannot_add_tenant_b_product(api_client):
     → Product.objects.get(pk=product_b.id) raises DoesNotExist → view returns
     404 product/not-found.  No cross-tenant data leaks.
     """
-    from apps.tenant.models import Tenant
-    from apps.tenant.context import tenant_context
 
     tenant_a = Tenant.objects.create(name="A", domain=f"a-{uuid.uuid4().hex[:8]}.test")
     tenant_b = Tenant.objects.create(name="B", domain=f"b-{uuid.uuid4().hex[:8]}.test")
@@ -800,9 +813,9 @@ def test_validation_error_is_rfc7807(api_client, tenant, user_id):
     )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["type"].startswith("https://"), (
-        f"type must be a URI, got {body['type']!r}"
-    )
+    assert body["type"].startswith(
+        "https://"
+    ), f"type must be a URI, got {body['type']!r}"
     assert "validation/invalid-input" in body["type"]
     assert "title" in body, "RFC 7807 body must include 'title'"
     assert body["status"] == 400, "RFC 7807 body must mirror the HTTP status code"
@@ -838,6 +851,6 @@ def test_checkout_action_409_on_lock_conflict(
     )
     assert resp.status_code == 409
     body = resp.json()
-    assert "cart/locked" in body.get("type", ""), (
-        f"Expected 'cart/locked' in type, got {body.get('type')!r}"
-    )
+    assert "cart/locked" in body.get(
+        "type", ""
+    ), f"Expected 'cart/locked' in type, got {body.get('type')!r}"

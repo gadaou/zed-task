@@ -56,12 +56,14 @@ _TITLES: dict[str, str] = {
 
 
 def _json_error(status: int, error_type: str, detail: str) -> HttpResponse:
-    body = json.dumps({
-        "type": f"{_BASE_URI}/{error_type}",
-        "title": _TITLES.get(error_type, "Tenant error"),
-        "status": status,
-        "detail": detail,
-    })
+    body = json.dumps(
+        {
+            "type": f"{_BASE_URI}/{error_type}",
+            "title": _TITLES.get(error_type, "Tenant error"),
+            "status": status,
+            "detail": detail,
+        }
+    )
     return HttpResponse(body, status=status, content_type="application/problem+json")
 
 

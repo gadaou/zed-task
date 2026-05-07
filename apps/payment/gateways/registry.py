@@ -59,7 +59,9 @@ def register_payment_gateway(
             "unregister_payment_gateway(name) first."
         )
     _REGISTRY[name] = gateway_class()
-    logger.debug("payment.registry: registered gateway '%s' (%s)", name, gateway_class.__name__)
+    logger.debug(
+        "payment.registry: registered gateway '%s' (%s)", name, gateway_class.__name__
+    )
 
 
 def get_payment_gateway(name: str) -> "PaymentGateway":
@@ -92,7 +94,9 @@ def unregister_payment_gateway(name: str) -> None:
         KeyError: if ``name`` is not registered (fail loud to catch typos).
     """
     if name not in _REGISTRY:
-        raise KeyError(f"Payment gateway '{name}' is not registered; cannot unregister.")
+        raise KeyError(
+            f"Payment gateway '{name}' is not registered; cannot unregister."
+        )
     del _REGISTRY[name]
     logger.debug("payment.registry: unregistered gateway '%s'", name)
 

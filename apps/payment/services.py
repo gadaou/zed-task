@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from uuid import UUID
 
 from django.db import transaction
@@ -64,6 +64,12 @@ from apps.payment.exceptions import (
 )
 from apps.payment.gateways import get_gateway, get_payment_gateway
 from apps.payment.gateways.base import ChargeResult
+
+if TYPE_CHECKING:
+    # Resolved at type-check time only; runtime imports happen inside method
+    # bodies to keep the service import-side-effect-free and break circular
+    # imports with apps.payment.models.
+    from apps.payment.models import Payment, PaymentMethod
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +100,7 @@ def add_payment_method(*, gateway_slug: str) -> "PaymentMethod":  # type: ignore
 
 
 # These statuses are already past authorization — no second gateway call needed.
-_ALREADY_AUTHORIZED = frozenset(
-    ["AUTHORIZED", "CAPTURED", "SUCCEEDED", "REFUNDED"]
-)
+_ALREADY_AUTHORIZED = frozenset(["AUTHORIZED", "CAPTURED", "SUCCEEDED", "REFUNDED"])
 
 # These statuses indicate a terminal failure — also idempotent-skip.
 _TERMINAL_FAILURE = frozenset(["FAILED", "CANCELLED"])
@@ -242,9 +246,9 @@ class PaymentService:
                     status=Payment.Status.REQUIRES_CONFIRMATION,
                 ).update(
                     status=Payment.Status.FAILED,
-                    failure_reason=(
-                        f"{result.error_code}: {result.error_message}"
-                    )[:255],
+                    failure_reason=(f"{result.error_code}: {result.error_message}")[
+                        :255
+                    ],
                 )
 
                 # Flip Order.status to FAILED (status-guarded).
@@ -267,7 +271,9 @@ class PaymentService:
                 order_id=str(order.id),
                 reason=result.error_code,
             )
-            incr("payment.declined", provider=payment.provider, reason=result.error_code)
+            incr(
+                "payment.declined", provider=payment.provider, reason=result.error_code
+            )
             raise GatewayDeclined(
                 error_code=result.error_code,
                 detail=result.error_message,
@@ -318,7 +324,9 @@ class PaymentService:
                         payment_id,
                     )
             payment.refresh_from_db()
-            logger.info("PaymentService.capture_payment: payment %s → CAPTURED", payment_id)
+            logger.info(
+                "PaymentService.capture_payment: payment %s → CAPTURED", payment_id
+            )
         else:
             with transaction.atomic():
                 Payment.objects.filter(
@@ -326,9 +334,9 @@ class PaymentService:
                     status=Payment.Status.AUTHORIZED,
                 ).update(
                     status=Payment.Status.FAILED,
-                    failure_reason=(
-                        f"{result.error_code}: {result.error_message}"
-                    )[:255],
+                    failure_reason=(f"{result.error_code}: {result.error_message}")[
+                        :255
+                    ],
                 )
             payment.refresh_from_db()
             logger.info(
@@ -336,7 +344,9 @@ class PaymentService:
                 payment_id,
                 result.error_code,
             )
-            raise GatewayDeclined(error_code=result.error_code, detail=result.error_message)
+            raise GatewayDeclined(
+                error_code=result.error_code, detail=result.error_message
+            )
 
         return payment
 
@@ -378,9 +388,13 @@ class PaymentService:
                         payment_id,
                     )
             payment.refresh_from_db()
-            logger.info("PaymentService.void_payment: payment %s → CANCELLED", payment_id)
+            logger.info(
+                "PaymentService.void_payment: payment %s → CANCELLED", payment_id
+            )
         else:
-            raise GatewayDeclined(error_code=result.error_code, detail=result.error_message)
+            raise GatewayDeclined(
+                error_code=result.error_code, detail=result.error_message
+            )
 
         return payment
 
@@ -426,9 +440,13 @@ class PaymentService:
                         payment_id,
                     )
             payment.refresh_from_db()
-            logger.info("PaymentService.refund_payment: payment %s → REFUNDED", payment_id)
+            logger.info(
+                "PaymentService.refund_payment: payment %s → REFUNDED", payment_id
+            )
         else:
-            raise GatewayDeclined(error_code=result.error_code, detail=result.error_message)
+            raise GatewayDeclined(
+                error_code=result.error_code, detail=result.error_message
+            )
 
         return payment
 
@@ -479,6 +497,10 @@ class PaymentService:
         from apps.payment.models import Payment
 
         try:
-            return Payment.objects.all_tenants().select_related("cart", "tenant").get(pk=payment_id)
+            return (
+                Payment.objects.all_tenants()
+                .select_related("cart", "tenant")
+                .get(pk=payment_id)
+            )
         except Payment.DoesNotExist:
             raise ValueError(f"Payment {payment_id} not found.")

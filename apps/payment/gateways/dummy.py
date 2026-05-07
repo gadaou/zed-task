@@ -159,9 +159,7 @@ class DummyTimeoutGateway(PaymentGateway):
         payment_method: Any,
         metadata: Mapping[str, Any] | None = None,
     ) -> AuthorizationResult:
-        raise GatewayTimeout(
-            "DummyTimeoutGateway: simulated authorization timeout"
-        )
+        raise GatewayTimeout("DummyTimeoutGateway: simulated authorization timeout")
 
     def capture_payment(self, payment_reference: str) -> CaptureResult:
         raise GatewayTimeout("DummyTimeoutGateway: simulated capture timeout")

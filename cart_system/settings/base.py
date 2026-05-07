@@ -178,7 +178,9 @@ DATABASES["default"].setdefault("ATOMIC_REQUESTS", False)
 # ---------------------------------------------------------------------------
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -322,7 +324,6 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": r"/api/v[0-9]+",
     "COMPONENT_SPLIT_REQUEST": True,
-
     # Only tags that have at least one wired @extend_schema(tags=[...]) endpoint
     # are listed here. Empty tags show up as orphaned sidebar entries in Swagger UI.
     # Tags for features without public REST endpoints yet (Coupon, Payment, Catalog,
@@ -359,7 +360,6 @@ SPECTACULAR_SETTINGS = {
             ),
         },
     ],
-
     # ---------------------------------------------------------------------------
     # Security schemes
     # ---------------------------------------------------------------------------
@@ -384,7 +384,6 @@ SPECTACULAR_SETTINGS = {
             },
         }
     },
-
     # ---------------------------------------------------------------------------
     # SwaggerUI / Redoc configuration
     # ---------------------------------------------------------------------------
@@ -408,18 +407,17 @@ SPECTACULAR_SETTINGS = {
             "typography": {"fontSize": "15px"},
         },
     },
-
     # ---------------------------------------------------------------------------
     # Schema quality
     # ---------------------------------------------------------------------------
     # Postprocess hooks for consistency across all generated schemas.
     "POSTPROCESSING_HOOKS": [
         "drf_spectacular.hooks.postprocess_schema_enums",
+        "apps.core.openapi.remove_cookie_auth_scheme",
     ],
     "ENUM_GENERATE_CHOICE_DESCRIPTION": True,
     "ENUM_ADD_EXPLICIT_BLANK_NULL_CHOICE": False,
     "SORT_OPERATIONS": False,  # preserve the natural URL order defined in urls.py
-
     # Show full request/response examples in the UI.
     "SERVE_AUTHENTICATION": [],
 }

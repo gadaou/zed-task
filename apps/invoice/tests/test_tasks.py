@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +30,9 @@ from apps.invoice.tasks import enqueue_generate_invoice, generate_invoice
 
 
 @pytest.mark.django_db(transaction=True)
-def test_task_generates_invoice_for_paid_order(paid_order_factory, tenant, settings, tmp_path):
+def test_task_generates_invoice_for_paid_order(
+    paid_order_factory, tenant, settings, tmp_path
+):
     """Dispatching generate_invoice for a PAID order creates the Invoice row."""
     settings.MEDIA_ROOT = str(tmp_path)
 
@@ -72,9 +73,9 @@ def test_task_idempotent_redelivery(paid_order_factory, tenant, settings, tmp_pa
     result1 = generate_invoice(str(order.id))
     result2 = generate_invoice(str(order.id))
 
-    assert result1["invoice_id"] == result2["invoice_id"], (
-        "Both task invocations must return the same invoice_id"
-    )
+    assert (
+        result1["invoice_id"] == result2["invoice_id"]
+    ), "Both task invocations must return the same invoice_id"
 
     from apps.invoice.models import Invoice
 

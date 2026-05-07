@@ -61,14 +61,50 @@ Public API
 
 from __future__ import annotations
 
+from typing import Any
+
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiParameter,
     OpenApiResponse,
-    inline_serializer,
 )
 from rest_framework import serializers
+
+
+# ---------------------------------------------------------------------------
+# Schema postprocessing
+# ---------------------------------------------------------------------------
+
+
+def remove_cookie_auth_scheme(
+    result: dict[str, Any], generator: Any, request: Any, public: bool
+) -> dict[str, Any]:
+    """Remove the auto-generated cookieAuth security scheme.
+
+    drf-spectacular automatically adds a cookieAuth scheme to
+    components.securitySchemes and to every per-operation security
+    array whenever SessionAuthentication appears in
+    DEFAULT_AUTHENTICATION_CLASSES.  This project uses a custom
+    TenantDomain apiKey scheme instead; cookieAuth must not appear
+    anywhere in the published schema.
+    """
+    # Remove from global security scheme definitions.
+    result.get("components", {}).get("securitySchemes", {}).pop("cookieAuth", None)
+
+    # Remove from every per-operation security requirement list.
+    for path_item in result.get("paths", {}).values():
+        for operation in path_item.values():
+            if not isinstance(operation, dict):
+                continue
+            security = operation.get("security")
+            if isinstance(security, list):
+                operation["security"] = [
+                    req for req in security if "cookieAuth" not in req
+                ]
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Shared header parameters
@@ -296,7 +332,7 @@ def checkout_request_examples() -> list[OpenApiExample]:
     return [
         OpenApiExample(
             name="Standard checkout",
-            summary="First-time checkout with a Stripe card",
+            summary="First-time checkout with a stored card",
             description=(
                 "The most common case: a cart with items, a stored card, and a "
                 "shipping address.  Use a fresh UUID for `Idempotency-Key`."

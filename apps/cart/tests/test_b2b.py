@@ -38,6 +38,7 @@ _ADD_PAYMENT_METHOD = BASE + "/add-payment-method/"
 @pytest.fixture
 def fake_redis():
     import fakeredis
+
     return fakeredis.FakeRedis(decode_responses=True)
 
 

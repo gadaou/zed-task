@@ -50,7 +50,9 @@ from apps.invoice.services import InvoiceService
 
 
 @pytest.mark.django_db(transaction=True)
-def test_generate_invoice_creates_record(paid_order_factory, tenant, settings, tmp_path):
+def test_generate_invoice_creates_record(
+    paid_order_factory, tenant, settings, tmp_path
+):
     """A PAID order produces an Invoice with correct fields."""
     settings.MEDIA_ROOT = str(tmp_path)
 
@@ -135,9 +137,9 @@ def test_invoice_db_row_committed_before_pdf(paid_order_factory, settings, tmp_p
     with patch.object(pdf_module, "render_invoice_pdf", side_effect=_capturing_render):
         InvoiceService().generate_invoice_for_order(order.id)
 
-    assert seen_in_db == [True], (
-        "Invoice row must already be committed in the DB when render_invoice_pdf is called"
-    )
+    assert (
+        seen_in_db == [True]
+    ), "Invoice row must already be committed in the DB when render_invoice_pdf is called"
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +199,15 @@ def test_invoice_pdf_retry_succeeds(paid_order_factory, settings, tmp_path):
     # Second call: PDF succeeds.
     invoice_after_retry = InvoiceService().generate_invoice_for_order(order.id)
 
-    assert invoice_after_retry.id == invoice_after_failure.id, (
-        "Retry must return the same Invoice row, not create a new one"
-    )
-    assert invoice_after_retry.pdf_url != "", "pdf_url must be set after successful retry"
-    assert invoice_after_retry.number == invoice_after_failure.number, (
-        "Sequence number must not change on retry"
-    )
+    assert (
+        invoice_after_retry.id == invoice_after_failure.id
+    ), "Retry must return the same Invoice row, not create a new one"
+    assert (
+        invoice_after_retry.pdf_url != ""
+    ), "pdf_url must be set after successful retry"
+    assert (
+        invoice_after_retry.number == invoice_after_failure.number
+    ), "Sequence number must not change on retry"
 
     # Sequence must still be 1 — not incremented on the retry.
     seq = InvoiceSequence.objects.get(tenant=order.tenant)
@@ -236,9 +240,9 @@ def test_invoice_pdf_retry_does_not_rerender_if_already_set(
     with patch.object(pdf_module, "render_invoice_pdf", side_effect=_counting_render):
         invoice_second = svc.generate_invoice_for_order(order.id)
 
-    assert render_call_count == 0, (
-        "render_invoice_pdf must not be called when pdf_url is already set"
-    )
+    assert (
+        render_call_count == 0
+    ), "render_invoice_pdf must not be called when pdf_url is already set"
     assert invoice_second.id == invoice_first.id
 
 

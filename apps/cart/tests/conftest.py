@@ -73,6 +73,7 @@ def ensure_dummy_gateways_registered():
     # were already registered when this fixture ran (they belong to another
     # lifecycle).
     from apps.payment.gateways.registry import unregister_payment_gateway
+
     for slug in _registered_now:
         if slug in _REGISTRY:
             unregister_payment_gateway(slug)

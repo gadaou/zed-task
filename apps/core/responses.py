@@ -27,8 +27,6 @@ import logging
 
 from rest_framework.response import Response
 
-logger = logging.getLogger(__name__)
-
 from apps.core.exceptions import (
     IdempotencyConflict,
     IdempotencyInProgress,
@@ -46,6 +44,8 @@ from apps.order.exceptions import (
     ProductOutOfStock,
 )
 from apps.payment.exceptions import PaymentDomainError, UnsupportedGateway
+
+logger = logging.getLogger(__name__)
 
 
 _BASE_URI = "https://cart-system.local/problems"

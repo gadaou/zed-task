@@ -119,7 +119,9 @@ def test_process_payment_idempotent_double_call(payment_factory, tenant):
         process_payment(str(order.id))
         process_payment(str(order.id))  # second call — idempotent
 
-    assert call_count == 1, "Gateway must be called exactly once; second call is a no-op"
+    assert (
+        call_count == 1
+    ), "Gateway must be called exactly once; second call is a no-op"
 
     payment.refresh_from_db()
     assert payment.status == Payment.Status.AUTHORIZED

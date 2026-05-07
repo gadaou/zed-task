@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any
 
 from apps.core.context import get_request_id, get_user_id
@@ -135,8 +134,8 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
             "request_id": record.request_id,  # type: ignore[attr-defined]
-            "tenant_id": record.tenant_id,    # type: ignore[attr-defined]
-            "user_id": record.user_id,        # type: ignore[attr-defined]
+            "tenant_id": record.tenant_id,  # type: ignore[attr-defined]
+            "user_id": record.user_id,  # type: ignore[attr-defined]
         }
 
         for field in _EXTRA_FIELDS:

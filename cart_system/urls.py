@@ -30,7 +30,10 @@ api_v1_patterns = [
     # Resource-oriented cart routes (e.g. /{cart_id}/checkout/).
     path("carts/", include(("apps.cart.urls", "cart"), namespace="carts")),
     # Action-style cart routes operating on the caller's single active cart.
-    path("cart/", include(("apps.cart.urls_actions", "cart_actions"), namespace="cart_actions")),
+    path(
+        "cart/",
+        include(("apps.cart.urls_actions", "cart_actions"), namespace="cart_actions"),
+    ),
     path("coupons/", include(("apps.coupon.urls", "coupon"), namespace="coupons")),
     path("payments/", include(("apps.payment.urls", "payment"), namespace="payments")),
     path("orders/", include(("apps.order.urls", "order"), namespace="orders")),
@@ -41,10 +44,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include(("apps.core.urls", "core"), namespace="core")),
     path("api/v1/", include((api_v1_patterns, "v1"), namespace="v1")),
-
     # OpenAPI schema (raw JSON/YAML — consumed by clients, CI linting, etc.)
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-
     # Swagger UI — primary interactive documentation surface for developers.
     # The ``url_name`` arg tells SpectacularSwaggerView which URL to fetch
     # the schema from; ``name`` is used in the <title> tag.
@@ -57,7 +58,6 @@ urlpatterns = [
         ),
         name="swagger-ui",
     ),
-
     # Redoc — alternative documentation surface, better for narrative reading.
     path(
         "api/redoc/",

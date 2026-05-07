@@ -43,9 +43,9 @@ def test_validation_problem_content_type():
 def test_validation_problem_type_is_uri():
     resp = validation_problem({"field": ["error"]})
     body = resp.data
-    assert body["type"].startswith("https://"), (
-        f"'type' must be a URI, got {body['type']!r}"
-    )
+    assert body["type"].startswith(
+        "https://"
+    ), f"'type' must be a URI, got {body['type']!r}"
     assert "validation/invalid-input" in body["type"]
 
 
@@ -84,8 +84,7 @@ def test_map_exception_logs_before_reraise(caplog):
             map_exception(exc)
 
     unhandled = [
-        r for r in caplog.records
-        if getattr(r, "action", None) == "error.unhandled"
+        r for r in caplog.records if getattr(r, "action", None) == "error.unhandled"
     ]
     assert unhandled, (
         "Expected at least one ERROR log record with action='error.unhandled' "
@@ -100,7 +99,6 @@ def test_map_exception_log_includes_exc_type(caplog):
             map_exception(exc)
 
     matching = [
-        r for r in caplog.records
-        if getattr(r, "exc_type", None) == "ValueError"
+        r for r in caplog.records if getattr(r, "exc_type", None) == "ValueError"
     ]
     assert matching, "log record must carry exc_type='ValueError'"

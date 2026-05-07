@@ -14,7 +14,6 @@ Design rules (mirrors apps/order/exceptions.py):
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 
@@ -42,7 +41,8 @@ class UnsupportedGateway(PaymentDomainError):
     def __init__(self, slug: str = "", detail: str = "", **extra: Any) -> None:
         self.slug = slug
         super().__init__(
-            detail or (
+            detail
+            or (
                 f"payment gateway '{slug}' is not registered"
                 if slug
                 else "payment gateway is not registered"
@@ -71,7 +71,8 @@ class GatewayDeclined(PaymentDomainError):
     ) -> None:
         self.error_code = error_code
         super().__init__(
-            detail or (
+            detail
+            or (
                 f"gateway declined with code '{error_code}'"
                 if error_code
                 else "gateway declined the charge"

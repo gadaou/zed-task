@@ -14,7 +14,6 @@ import uuid
 
 import pytest
 
-from apps.addresses.models import Address
 from apps.addresses.services import add_address
 from apps.tenant.context import tenant_context
 from apps.tenant.models import Tenant
@@ -149,6 +148,7 @@ def test_add_address_soft_deleted_default_not_demoted(tenant, user_id) -> None:
         is_default=True,
     )
     from django.utils import timezone
+
     first.deleted_at = timezone.now()
     first.save(update_fields=["deleted_at"])
 

@@ -24,9 +24,8 @@ Test coverage:
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -35,13 +34,7 @@ from apps.payment.exceptions import (
     GatewayTimeout,
     UnsupportedGateway,
 )
-from apps.payment.gateways.base import AuthorizationResult
 from apps.payment.gateways.dummy import DummySuccessGateway
-from apps.payment.gateways.registry import (
-    _REGISTRY,
-    register_payment_gateway,
-    unregister_payment_gateway,
-)
 from apps.payment.models import Payment
 from apps.payment.services import PaymentService
 
@@ -100,7 +93,6 @@ def test_authorize_success(payment_factory, tenant):
 @pytest.mark.django_db(transaction=True)
 def test_authorize_flips_order_to_paid(payment_factory, tenant):
     """Successful authorization must flip Order.status to PAID."""
-    from apps.order.models import Order
 
     payment = payment_factory(provider="dummy_success")
     order = _build_order_for_payment(payment)
@@ -156,7 +148,6 @@ def test_authorize_declined(payment_factory, tenant):
 @pytest.mark.django_db(transaction=True)
 def test_authorize_declined_flips_order_to_failed(payment_factory, tenant):
     """Gateway decline must flip Order.status to FAILED."""
-    from apps.order.models import Order
 
     payment = payment_factory(provider="dummy_failing")
     order = _build_order_for_payment(payment)
@@ -213,7 +204,9 @@ def test_authorize_unsupported_gateway(payment_factory, tenant):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_authorize_timeout_propagates_and_leaves_status_unchanged(payment_factory, tenant):
+def test_authorize_timeout_propagates_and_leaves_status_unchanged(
+    payment_factory, tenant
+):
     """DummyTimeoutGateway raises GatewayTimeout; payment stays REQUIRES_CONFIRMATION."""
     payment = payment_factory(provider="dummy_timeout")
     _build_order_for_payment(payment)
@@ -249,7 +242,9 @@ def test_authorize_idempotent_double_call(payment_factory, tenant):
         PaymentService().authorize_payment(payment.id)
         PaymentService().authorize_payment(payment.id)  # second call — idempotent
 
-    assert call_count == 1, "Gateway must be called exactly once; second call is a no-op"
+    assert (
+        call_count == 1
+    ), "Gateway must be called exactly once; second call is a no-op"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -296,7 +291,9 @@ def test_celery_task_idempotent_retry(payment_factory, tenant):
     result2 = celery_authorize(str(payment.id))  # idempotent retry
 
     assert result1["status"] == Payment.Status.AUTHORIZED
-    assert result2["status"] == Payment.Status.AUTHORIZED  # or "skipped" — still correct
+    assert (
+        result2["status"] == Payment.Status.AUTHORIZED
+    )  # or "skipped" — still correct
 
     # Exactly one order in AUTHORIZED state.
     payment.refresh_from_db()
