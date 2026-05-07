@@ -95,7 +95,7 @@ Applying a coupon runs the coupon through the rule registry (usage limits, stack
 5. Lock the cart row with `select_for_update()`.
 6. Revalidate all applied coupons.
 7. Deduct stock: `UPDATE catalog_product SET stock = stock - qty WHERE pk = ? AND stock >= qty`. Zero rows updated raises a 409 — no overselling is possible.
-8. Create `Order` and `OrderItem` rows.
+8. Create `Order` and `OrderItem` rows. B2B fields (`company_name`, `tax_number`, `purchase_order_reference`) are snapshotted verbatim from the cart onto the `Order` row — see [`docs/diagrams/b2b-flow.md`](docs/diagrams/b2b-flow.md).
 9. Transition the cart to `CHECKED_OUT`.
 10. Create a `Payment` record in `REQUIRES_CONFIRMATION` state.
 11. Write the `IdempotencyRecord` with the serialized response payload.
@@ -214,6 +214,7 @@ POST /api/v1/cart/add-coupon/
 POST /api/v1/cart/remove-coupon/
 POST /api/v1/cart/add-address/
 POST /api/v1/cart/add-payment-method/
+POST /api/v1/cart/set-business-details/   B2B only — sets company_name, tax_number, purchase_order_reference
 POST /api/v1/cart/checkout/
 ```
 
