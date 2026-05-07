@@ -49,6 +49,21 @@ Client
 - **Redis** — three roles: distributed checkout locks (`SET NX PX` + fenced Lua unlock), in-progress idempotency sentinels (`SET NX EX`), and Celery broker. Redis is used as the broker for this assessment to keep the deployment to a single additional service; the payment domain logic is fully decoupled from transport, so swapping to RabbitMQ is a `CELERY_BROKER_URL` change.
 - **Celery** — three named queues: `payments`, `invoices`, `notifications`. Workers use `acks_late` and prefetch 1 so tasks are not lost on worker crash. Every task is written to be idempotent — Celery re-deliveries are safe no-ops.
 
+### Architecture Diagrams
+
+Visual walkthroughs of every major subsystem — open any diagram in a Mermaid-capable renderer (GitHub, GitLab, VS Code, [mermaid.live](https://mermaid.live)):
+
+| Diagram | What it shows |
+|---------|---------------|
+| [System Architecture](docs/diagrams/system-architecture.md) | Full component map: clients, Django API, PostgreSQL, Redis, Celery, gateway registry, health, observability |
+| [Checkout Sequence](docs/diagrams/checkout-sequence.md) | Step-by-step checkout: tenant resolution, idempotency, Redis lock, `transaction.atomic`, stock update, `on_commit`, Celery payment task |
+| [Tenant Isolation Flow](docs/diagrams/tenant-isolation-flow.md) | `X-Tenant-Domain` → `TenantMiddleware` → `ContextVar` → `TenantAwareManager` → tenant-scoped queries; foreign-tenant resources return 404 |
+| [Payment Flow](docs/diagrams/payment-flow.md) | Gateway dispatch, dummy gateway paths, `Payment` FSM (`REQUIRES_CONFIRMATION → AUTHORIZED / FAILED`), retry handling |
+| [Invoice Generation Flow](docs/diagrams/invoice-flow.md) | `on_commit` trigger, two-phase generation (DB row + PDF), idempotent retry via `OneToOneField` + status-guarded UPDATE |
+| [Cache, Idempotency & Locks](docs/diagrams/cache-idempotency-locks.md) | Cart read cache invalidation, Redis idempotency sentinel, PostgreSQL durable record, Lua-fenced checkout lock |
+| [B2B Buyer Flow](docs/diagrams/b2b-flow.md) | `set-business-details`, cart metadata, checkout snapshot onto `Order`, invoice reads from `Order` (not `Cart`) |
+| [Data Model ERD](docs/diagrams/data-model-erd.md) | All 13 persistent models, their key fields, and every FK / association across the 8 apps |
+
 ---
 
 ## 3. Core Flows

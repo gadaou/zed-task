@@ -37,9 +37,26 @@ Celery is configured with `CELERY_TASK_ALWAYS_EAGER=True` in test settings so th
 
 ---
 
-## 2. Multi-tenancy Strategy
+## 2. Architecture Diagrams
 
-### 2.1 The `tenant_id` approach
+Visual walkthroughs of every major subsystem. Each diagram is self-contained with a short guarantee summary beneath it.
+
+| Diagram | What it shows |
+|---------|---------------|
+| [System Architecture](diagrams/system-architecture.md) | Full component map: clients, Django API, PostgreSQL, Redis, Celery, gateway registry, health, observability |
+| [Checkout Sequence](diagrams/checkout-sequence.md) | Step-by-step checkout: tenant resolution, idempotency, Redis lock, `transaction.atomic`, stock update, `on_commit`, Celery payment task |
+| [Tenant Isolation Flow](diagrams/tenant-isolation-flow.md) | `X-Tenant-Domain` → `TenantMiddleware` → `ContextVar` → `TenantAwareManager` → tenant-scoped queries; foreign-tenant resources return 404 |
+| [Payment Flow](diagrams/payment-flow.md) | Gateway dispatch, dummy gateway paths, `Payment` FSM (`REQUIRES_CONFIRMATION → AUTHORIZED / FAILED`), retry handling |
+| [Invoice Generation Flow](diagrams/invoice-flow.md) | `on_commit` trigger, two-phase generation (DB row + PDF), idempotent retry via `OneToOneField` + status-guarded UPDATE |
+| [Cache, Idempotency & Locks](diagrams/cache-idempotency-locks.md) | Cart read cache invalidation, Redis idempotency sentinel, PostgreSQL durable record, Lua-fenced checkout lock |
+| [B2B Buyer Flow](diagrams/b2b-flow.md) | `set-business-details`, cart metadata, checkout snapshot onto `Order`, invoice reads from `Order` (not `Cart`) |
+| [Data Model ERD](diagrams/data-model-erd.md) | All 13 persistent models, their key fields, and every FK / association across the 8 apps |
+
+---
+
+## 3. Multi-tenancy Strategy
+
+### 3.1 The `tenant_id` approach
 
 Every domain model inherits [`TenantAwareModel`](../apps/tenant/models.py), an
 abstract base that adds:
@@ -52,7 +69,7 @@ abstract base that adds:
 a new tenant is an `INSERT` into the `tenants_tenant` table — no schema
 bootstrap, no migration.
 
-### 2.2 Isolation guarantees — three layers
+### 3.2 Isolation guarantees — three layers
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -77,7 +94,7 @@ bootstrap, no migration.
 - No coupon overuse — `TenantAwareManager` auto-scopes every queryset, so a coupon belonging to tenant B is invisible to tenant A's apply call regardless of what the client sends.
 - Strong tenant isolation — three independent enforcement layers (middleware, ORM manager, schema indexes) must all fail simultaneously for cross-tenant data to leak; each layer is independently testable and independently auditable.
 
-### 2.3 Enforcement layers — detail
+### 3.3 Enforcement layers — detail
 
 **Request layer — [`TenantMiddleware`](../apps/tenant/middleware.py)**
 
@@ -112,9 +129,9 @@ A `tenant_context(tenant)` context manager (`apps/tenant/context.py`) sets/unset
 
 ---
 
-## 3. Cart System
+## 4. Cart System
 
-### 3.1 Data model
+### 4.1 Data model
 
 **`Cart`** ([`apps/cart/models.py`](../apps/cart/models.py))
 
@@ -146,7 +163,7 @@ A `tenant_context(tenant)` context manager (`apps/tenant/context.py`) sets/unset
 
 `product_id` is a bare `UUIDField` — no FK to `catalog.Product`. Price and stock validation happen in the service at add-time and again at checkout. This keeps the cart aggregate decoupled from the catalog app.
 
-### 3.2 Price snapshot reasoning
+### 4.2 Price snapshot reasoning
 
 `CartItem.price_snapshot` captures the catalog price at the moment the item is added. The live catalog price may drift before the customer checks out. At checkout, the service re-reads the live price and surfaces `product/price-changed` if the delta is outside tolerance.
 
@@ -157,7 +174,7 @@ Snapshots exist for three reasons:
 2. **Removal is deterministic** — removing a coupon subtracts a known, fixed amount.
 3. **UX fidelity** — the customer sees the price they agreed to, not a live fluctuating number.
 
-### 3.3 `recalculate_cart`
+### 4.3 `recalculate_cart`
 
 Every mutating service (`add_product_to_cart`, `remove_product_from_cart`, `apply_coupon_to_cart`, `remove_coupon_from_cart`) calls `recalculate_cart` as its final step. It:
 
@@ -170,9 +187,9 @@ Every mutating service (`add_product_to_cart`, `remove_product_from_cart`, `appl
 
 ---
 
-## 4. Coupon System
+## 5. Coupon System
 
-### 4.1 Data model
+### 5.1 Data model
 
 **`Coupon`** ([`apps/coupon/models.py`](../apps/coupon/models.py))
 
@@ -190,7 +207,7 @@ Every mutating service (`add_product_to_cart`, `remove_product_from_cart`, `appl
 
 **`CartCoupon`** — the join between `Cart` and `Coupon`, storing the discount snapshot at apply-time. `UniqueConstraint(cart, coupon)` prevents re-applying the same coupon to the same cart.
 
-### 4.2 Rule-based validation (registry pattern)
+### 5.2 Rule-based validation (registry pattern)
 
 Coupon constraints are stored as an opaque JSON dict on the `Coupon` model (e.g. `{"min_total": "50.00", "allowed_countries": ["SA", "AE"]}`). The `CouponValidator` class ([`apps/coupon/validators.py`](../apps/coupon/validators.py)) dispatches each key to a registered handler:
 
@@ -241,7 +258,7 @@ Failing closed on unknown keys means a typo in admin tooling (`"min_totla": 50`)
 
 `CouponValidationContext` (a frozen dataclass) carries `cart_total`, `cart_currency`, `customer_country`, and `now` — built once per apply call and passed to every rule. Rules are read-only; they validate and never mutate.
 
-### 4.3 Stacking policy
+### 5.3 Stacking policy
 
 `CouponService` ([`apps/coupon/services.py`](../apps/coupon/services.py)) enforces a class-level `STACKING_POLICY` before the validator runs:
 
@@ -255,7 +272,7 @@ The policy is a class attribute (`CouponService.STACKING_POLICY`), making it con
 
 Lock order inside `_enforce_stacking_policy`: the cart row is already locked by the time this runs, so the existing-applications query is consistent with the subsequent insert.
 
-### 4.4 Discount calculation logic
+### 5.4 Discount calculation logic
 
 `_compute_discount` in [`apps/coupon/services.py`](../apps/coupon/services.py):
 
@@ -279,7 +296,7 @@ FIXED discounts are applied against the post-PERCENTAGE-discount subtotal, clamp
 
 The DB `CHECK ck_cart_total_after_discount_nonneg` is the schema-level safety net that the cart total can never go negative.
 
-### 4.5 Coupon validation flow
+### 5.5 Coupon validation flow
 
 The diagram below traces a single `apply_coupon_to_cart` call from the initial request through every guard layer, including all failure exits.
 
@@ -332,9 +349,9 @@ flowchart TD
 
 ---
 
-## 5. Concurrency & Consistency
+## 6. Concurrency & Consistency
 
-### 5.1 `select_for_update` usage
+### 6.1 `select_for_update` usage
 
 Every mutating service re-fetches the row it is about to change with `select_for_update()` inside `transaction.atomic`:
 
@@ -352,7 +369,7 @@ For `apply_coupon_to_cart`, **two** rows are locked in a fixed order to avoid th
 
 This lock order is consistent across `apply` and `revalidate_cart_coupons` — both always acquire coupon-then-cart.
 
-### 5.2 Conditional update for `usage_limit`
+### 6.2 Conditional update for `usage_limit`
 
 The `used_count` increment is not a plain F-expression; it is a **conditional UPDATE**:
 
@@ -377,7 +394,7 @@ Coupon.objects.filter(pk=coupon_id, used_count__gt=0).update(
 
 `WHERE used_count > 0` prevents underflow even if a buggy path forgot to increment.
 
-### 5.3 Race condition handling strategy
+### 6.3 Race condition handling strategy
 
 Defence in depth — three guards close every known window:
 
@@ -416,9 +433,9 @@ sequenceDiagram
 
 ---
 
-## 6. Design Principles
+## 7. Design Principles
 
-### 6.1 Service layer architecture
+### 7.1 Service layer architecture
 
 ```
 HTTP → DRF View (parse, validate input, dispatch)
@@ -437,7 +454,7 @@ HTTP → DRF View (parse, validate input, dispatch)
 - **Services are functions or small service objects.** One `services.py` per app. `CouponService` is a class because it carries injectable state (`_validator`, `_stacking_policy`); cart services are module-level functions because they have no injected dependencies.
 - **Services call each other only at the boundary.** `CouponService` imports `recalculate_cart` from `apps.cart.services` inside the method body (deferred import) to avoid circular imports at module load.
 
-### 6.2 Transaction usage
+### 7.2 Transaction usage
 
 `@transaction.atomic` decorates every mutating service entry point. The pattern is:
 
@@ -451,7 +468,7 @@ HTTP → DRF View (parse, validate input, dispatch)
 
 `transaction.on_commit(...)` is the only place Celery tasks are scheduled. Tasks are never enqueued mid-transaction — a rolled-back transaction would otherwise enqueue a task for a state that never committed.
 
-### 6.3 Validation approach
+### 7.3 Validation approach
 
 Three layers, outermost to innermost:
 
@@ -464,7 +481,7 @@ The rule is: never trust the client. Price, stock, coupon eligibility, and tenan
 
 ---
 
-## 7. Trade-offs So Far
+## 8. Trade-offs So Far
 
 ### Why single DB
 
@@ -504,7 +521,7 @@ The governing principle (spec §7.5): "No premature distribution. The system is 
 
 ---
 
-## 8. Checkout Flow
+## 9. Checkout Flow
 
 Checkout is the linearization point — the only path that combines a Redis distributed lock, a Postgres transaction with row locks, async payment dispatch, and idempotency enforcement in a single flow.
 
@@ -585,7 +602,7 @@ sequenceDiagram
 
 ---
 
-## 9. Pluggable Payment Gateways
+## 10. Pluggable Payment Gateways
 
 The full design, extension guide, and example skeleton are in
 **[docs/payment-gateways.md](payment-gateways.md)**.
@@ -634,9 +651,9 @@ No `if/else` on gateway slug anywhere in the service or task layer.
 
 ---
 
-## 10. Invoice System
+## 11. Invoice System
 
-### 10.1 Design goals
+### 11.1 Design goals
 
 Three constraints shaped the invoice implementation:
 
@@ -644,7 +661,7 @@ Three constraints shaped the invoice implementation:
 2. **Generation must be idempotent.** A Celery re-delivery, a network timeout, or a worker crash must not duplicate invoice rows or corrupt the per-tenant sequence.
 3. **PDF failures must be recoverable.** If the PDF renderer fails or the worker crashes between phases, the system needs a clear signal ("this invoice needs a PDF") without losing the allocated number.
 
-### 10.2 Data model
+### 11.2 Data model
 
 **`InvoiceSequence`** — one row per tenant, protected by `select_for_update`.
 
@@ -664,7 +681,7 @@ Three constraints shaped the invoice implementation:
 | `pdf_url` | Empty string until Phase 2 completes; non-empty = PDF confirmed written |
 | `generated_at` | `auto_now_add` timestamp of the DB row commit |
 
-### 10.3 Two-phase generation flow
+### 11.3 Two-phase generation flow
 
 ```
 Celery worker: generate_invoice(order_id)
@@ -693,7 +710,7 @@ Celery worker: generate_invoice(order_id)
 | Retry after Phase 2 crash | `IntegrityError` caught → fetch existing row, `pdf_url = ""` → re-render | PDF re-rendered, status-guarded UPDATE writes URL |
 | Retry after both phases succeed | `IntegrityError` caught → fetch existing row, `pdf_url` already set → return immediately | No render |
 
-### 10.4 Dispatch chain
+### 11.4 Dispatch chain
 
 ```
 PaymentService.authorize_payment(payment_id)
@@ -711,7 +728,7 @@ PaymentService.authorize_payment(payment_id)
 
 The `transaction.on_commit` hook ensures no invoice task is ever enqueued for an order that was never committed — a critical guarantee given the two-phase design.
 
-### 10.5 Failure handling
+### 11.5 Failure handling
 
 | Failure point | Outcome | Recovery |
 |---|---|---|
@@ -722,7 +739,7 @@ The `transaction.on_commit` hook ensures no invoice task is ever enqueued for an
 
 ---
 
-## 11. Reliability & Consistency Summary
+## 12. Reliability & Consistency Summary
 
 The following mechanisms combine to form the system's reliability posture. Each is independently testable and auditable.
 
@@ -740,7 +757,7 @@ The following mechanisms combine to form the system's reliability posture. Each 
 
 ---
 
-## 12. Scaling Considerations
+## 13. Scaling Considerations
 
 ### Today
 
@@ -771,7 +788,7 @@ The `transaction.on_commit → Celery` dispatch pattern is already event-driven 
 
 ---
 
-## 13. Trade-offs
+## 14. Trade-offs
 
 ### Shared-schema multi-tenancy
 
