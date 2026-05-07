@@ -124,6 +124,21 @@ class CheckoutResponseSerializer(serializers.Serializer):
             "(e.g. `USD`, `EUR`, `SAR`)."
         ),
     )
+    company_name = serializers.CharField(
+        read_only=True,
+        default="",
+        help_text="Legal company name of the B2B buyer (empty for B2C orders).",
+    )
+    tax_number = serializers.CharField(
+        read_only=True,
+        default="",
+        help_text="VAT/GST/tax registration number snapshotted from the cart.",
+    )
+    purchase_order_reference = serializers.CharField(
+        read_only=True,
+        default="",
+        help_text="Buyer's internal purchase-order reference snapshotted from the cart.",
+    )
 
     class Meta:
         openapi_extra = {

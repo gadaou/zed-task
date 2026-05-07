@@ -104,6 +104,9 @@ class CheckoutResult:
     total: str
     currency: str
     http_status: int = 202
+    company_name: str = ""
+    tax_number: str = ""
+    purchase_order_reference: str = ""
 
 
 class CheckoutService:
@@ -396,6 +399,9 @@ class CheckoutService:
             total=cart.total_after_discount,
             currency=cart.currency,
             idempotency_key=idempotency_key,
+            company_name=cart.company_name,
+            tax_number=cart.tax_number,
+            purchase_order_reference=cart.purchase_order_reference,
         )
 
         OrderItem.objects.bulk_create([
@@ -456,6 +462,9 @@ class CheckoutService:
             "payment_status": "pending",
             "total": str(order.total),
             "currency": order.currency,
+            "company_name": order.company_name,
+            "tax_number": order.tax_number,
+            "purchase_order_reference": order.purchase_order_reference,
         }
         IdempotencyRecord.objects.create(
             tenant_id=tenant_id,
@@ -494,6 +503,9 @@ class CheckoutService:
             total=str(order.total),
             currency=order.currency,
             http_status=202,
+            company_name=order.company_name,
+            tax_number=order.tax_number,
+            purchase_order_reference=order.purchase_order_reference,
         )
 
     # ------------------------------------------------------------------
@@ -511,4 +523,7 @@ class CheckoutService:
             total=body.get("total", "0.00"),
             currency=body.get("currency", ""),
             http_status=record.response_status or 202,
+            company_name=body.get("company_name", ""),
+            tax_number=body.get("tax_number", ""),
+            purchase_order_reference=body.get("purchase_order_reference", ""),
         )

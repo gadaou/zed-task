@@ -233,12 +233,16 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "user": "1000/hour",
         "anon": "100/hour",
+        # Targeted scopes used by TenantUserScopedThrottle (apps.core.throttling).
+        # Scoped per (tenant, user) — safe across multiple app containers because
+        # counters live in Redis, not local process memory.
+        "checkout": "10/minute",
+        "add_product": "60/minute",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    # The custom problem+json exception handler (RFC 7807) lands with apps.core
-    # in a later iteration; until then the DRF default is used so behaviour is
-    # predictable and lint-clean.
-    # "EXCEPTION_HANDLER": "apps.core.exceptions.problem_json_handler",
+    # RFC 7807 exception handler — converts DRF's Throttled (429) to
+    # problem+json; delegates all other exceptions to DRF's default handler.
+    "EXCEPTION_HANDLER": "apps.core.exceptions.problem_json_handler",
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
 }
 

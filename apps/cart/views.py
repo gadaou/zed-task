@@ -50,11 +50,13 @@ from apps.cart.serializers import (
     CartReadSerializer,
     RemoveCouponSerializer,
     RemoveProductSerializer,
+    SetBusinessDetailsSerializer,
 )
 from apps.cart.services import (
     add_product_to_cart,
     get_or_create_active_cart,
     remove_product_from_cart,
+    set_business_details,
     set_cart_address,
     set_cart_payment_method,
 )
@@ -69,8 +71,10 @@ from apps.core.openapi import (
     IDEMPOTENCY_KEY_HEADER,
     TENANT_DOMAIN_HEADER,
     USER_ID_HEADER,
+    b2b_request_examples,
     problem_response,
 )
+from apps.core.throttling import TenantUserScopedThrottle
 from apps.core.responses import map_exception, problem, validation_problem
 from apps.coupon.exceptions import CouponDomainError
 from apps.coupon.services import CouponService
@@ -158,6 +162,18 @@ _CART_COMMON_ERRORS = {
     ),
 }
 
+_RATE_LIMIT_RESPONSE = problem_response(
+    429,
+    "rate-limit/exceeded",
+    "Too many requests",
+    "Rate limit exceeded — retry after the window resets.",
+    description=(
+        "Returned when the per-tenant/per-user request rate exceeds the "
+        "configured limit for this endpoint. Retry after the fixed window "
+        "resets (typically 1 minute)."
+    ),
+)
+
 
 class CartReadView(APIView):
     """``GET /api/v1/cart``
@@ -217,6 +233,8 @@ class AddProductView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [TenantUserScopedThrottle]
+    throttle_scope = "add_product"
 
     @extend_schema(
         operation_id="cart_add_product",
@@ -225,7 +243,8 @@ class AddProductView(APIView):
             "Adds `quantity` units of `product_id` to the caller's active cart, "
             "creating the cart if it does not yet exist.\n\n"
             "If the product is already in the cart the existing quantity is "
-            "**incremented** — no duplicate line is created."
+            "**incremented** — no duplicate line is created.\n\n"
+            "Rate limit: **60 requests / minute** per tenant + user."
         ),
         tags=["Cart"],
         parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
@@ -245,6 +264,7 @@ class AddProductView(APIView):
                     "Returned when `product_id` does not exist within the current tenant."
                 ),
             ),
+            429: _RATE_LIMIT_RESPONSE,
         },
     )
     def post(self, request: Request) -> Response:
@@ -556,6 +576,74 @@ class AddPaymentMethodView(APIView):
         return _cart_response(cart)
 
 
+class SetBusinessDetailsView(APIView):
+    """``POST /api/v1/cart/set-business-details``
+
+    Set B2B buyer-metadata on the caller's active cart.  The fields are
+    persisted to the cart and returned immediately in the response, so a
+    subsequent ``GET /api/v1/cart/`` reflects them.  At checkout time the
+    checkout service snapshots these fields onto the Order.
+
+    Request body (all fields optional, at least one must be non-empty)::
+
+        {
+            "company_name":              "Acme Corp Ltd",      // optional
+            "tax_number":                "GB123456789",        // optional
+            "purchase_order_reference":  "PO-2026-00042"      // optional
+        }
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_set_business_details",
+        summary="Set B2B business details on the active cart",
+        description=(
+            "Stores company name, tax/VAT number, and/or purchase-order "
+            "reference on the caller's active cart.\n\n"
+            "All three fields are optional individually, but at least one "
+            "must be non-empty. They are visible in `GET /api/v1/cart/` "
+            "immediately and are snapshotted onto the Order at checkout time.\n\n"
+            "Calling this endpoint is idempotent — repeated calls overwrite "
+            "the previous values."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        request=SetBusinessDetailsSerializer,
+        examples=b2b_request_examples(),
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with B2B details applied.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = SetBusinessDetailsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        data = serializer.validated_data
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = set_business_details(
+                cart,
+                company_name=data.get("company_name", ""),
+                tax_number=data.get("tax_number", ""),
+                purchase_order_reference=data.get("purchase_order_reference", ""),
+            )
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
 class CartCheckoutView(APIView):
     """``POST /api/v1/cart/checkout``
 
@@ -572,6 +660,8 @@ class CartCheckoutView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [TenantUserScopedThrottle]
+    throttle_scope = "checkout"
 
     @extend_schema(
         operation_id="cart_checkout",
@@ -651,6 +741,7 @@ class CartCheckoutView(APIView):
                     "(empty cart, out-of-stock product, expired coupon)."
                 ),
             ),
+            429: _RATE_LIMIT_RESPONSE,
         },
     )
     def post(self, request: Request) -> Response:
@@ -714,6 +805,9 @@ class CartCheckoutView(APIView):
                     "payment_status": body.get("payment_status", "pending"),
                     "total": body.get("total", "0.00"),
                     "currency": body.get("currency", ""),
+                    "company_name": body.get("company_name", ""),
+                    "tax_number": body.get("tax_number", ""),
+                    "purchase_order_reference": body.get("purchase_order_reference", ""),
                 })
                 return Response(out.data, status=_prior.response_status or 202)
 
@@ -767,5 +861,8 @@ class CartCheckoutView(APIView):
             "payment_status": result.payment_status,
             "total": result.total,
             "currency": result.currency,
+            "company_name": result.company_name,
+            "tax_number": result.tax_number,
+            "purchase_order_reference": result.purchase_order_reference,
         })
         return Response(out.data, status=result.http_status)

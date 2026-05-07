@@ -127,6 +127,13 @@ class Cart(TenantAwareModel):
         related_name="+",
     )
 
+    # Lightweight B2B fields — set via POST /cart/set-business-details/ and
+    # snapshotted onto the Order at checkout time.  All optional (empty string
+    # default) so existing carts and B2C flows are not affected.
+    company_name = models.CharField(max_length=200, blank=True, default="")
+    tax_number = models.CharField(max_length=50, blank=True, default="")
+    purchase_order_reference = models.CharField(max_length=100, blank=True, default="")
+
     class Meta:
         verbose_name = "Cart"
         verbose_name_plural = "Carts"

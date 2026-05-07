@@ -47,9 +47,21 @@ from apps.core.openapi import (
     checkout_response_examples,
     problem_response,
 )
+
+_RATE_LIMIT_RESPONSE = problem_response(
+    429,
+    "rate-limit/exceeded",
+    "Too many requests",
+    "Rate limit exceeded — retry after the window resets.",
+    description=(
+        "Returned when the per-tenant/per-user checkout rate exceeds "
+        "10 requests per minute. Retry after the fixed window resets."
+    ),
+)
 from apps.core.responses import map_exception as _map_exception
 from apps.core.responses import problem as _problem
 from apps.core.responses import validation_problem as _validation_problem
+from apps.core.throttling import TenantUserScopedThrottle
 from apps.coupon.exceptions import CouponDomainError
 from apps.order.exceptions import (
     AddressNotFound,
@@ -98,6 +110,8 @@ class CheckoutView(APIView):
     # the correct tenant.  Replace with a custom permission class when the
     # bearer-token integration lands.
     permission_classes = [AllowAny]
+    throttle_classes = [TenantUserScopedThrottle]
+    throttle_scope = "checkout"
 
     @extend_schema(
         operation_id="checkout_cart",
@@ -241,6 +255,7 @@ class CheckoutView(APIView):
                     "| `coupon/usage-limit-reached` | Coupon fully redeemed |\n"
                 ),
             ),
+            429: _RATE_LIMIT_RESPONSE,
         },
         examples=[
             *checkout_request_examples(),
@@ -349,5 +364,8 @@ class CheckoutView(APIView):
             "payment_status": result.payment_status,
             "total": result.total,
             "currency": result.currency,
+            "company_name": result.company_name,
+            "tax_number": result.tax_number,
+            "purchase_order_reference": result.purchase_order_reference,
         })
         return Response(out.data, status=result.http_status)

@@ -55,3 +55,31 @@ class IdempotencyInProgress(CoreDomainError):
     """
 
     type = "idempotency/in-progress"
+
+
+# ---------------------------------------------------------------------------
+# DRF exception handler — converts framework-level exceptions to RFC 7807
+# ---------------------------------------------------------------------------
+
+
+def problem_json_handler(exc, context):
+    """DRF exception handler that converts ``Throttled`` to RFC 7807 format.
+
+    For all other exceptions, delegates to DRF's default handler so existing
+    behaviour is not disturbed.
+
+    Enabled via ``settings.REST_FRAMEWORK["EXCEPTION_HANDLER"]``.
+    """
+    from rest_framework.exceptions import Throttled
+    from rest_framework.views import exception_handler
+
+    if isinstance(exc, Throttled):
+        from apps.core.responses import problem
+        return problem(
+            "rate-limit/exceeded",
+            "Too many requests",
+            429,
+            "Rate limit exceeded — retry after the window resets.",
+        )
+
+    return exception_handler(exc, context)

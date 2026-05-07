@@ -107,6 +107,12 @@ class Order(TenantAwareModel):
     # ISO 4217 three-letter currency code, copied from the cart.
     currency = models.CharField(max_length=3)
 
+    # B2B snapshot fields — copied from Cart at checkout time.  Empty string
+    # when the buyer did not supply business details (B2C flow).
+    company_name = models.CharField(max_length=200, blank=True, default="")
+    tax_number = models.CharField(max_length=50, blank=True, default="")
+    purchase_order_reference = models.CharField(max_length=100, blank=True, default="")
+
     # Client-supplied Idempotency-Key header value (PROJECT_SPEC §4.5).
     # Indexed for fast idempotency-record → order lookup.
     idempotency_key = models.UUIDField(db_index=True)

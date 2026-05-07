@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from apps.catalog.models import Product
+from apps.catalog.models import Product  # noqa: F401 — used by help_text examples
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +131,58 @@ class AddPaymentMethodSerializer(serializers.Serializer):
     )
 
 
+class SetBusinessDetailsSerializer(serializers.Serializer):
+    """Input for ``POST /api/v1/cart/set-business-details``.
+
+    Sets B2B buyer-metadata fields on the active cart so they appear in
+    ``GET /api/v1/cart/`` immediately and are snapshotted onto the Order at
+    checkout time.
+
+    All three fields are optional individually, but at least one must be
+    non-empty to avoid a no-op call.
+    """
+
+    company_name = serializers.CharField(
+        max_length=200,
+        required=False,
+        default="",
+        allow_blank=True,
+        help_text="Legal company name of the B2B buyer (e.g. 'Acme Corp').",
+    )
+    tax_number = serializers.CharField(
+        max_length=50,
+        required=False,
+        default="",
+        allow_blank=True,
+        help_text=(
+            "VAT / GST / tax registration number for the buyer's organisation "
+            "(e.g. 'GB123456789'). Used on the invoice."
+        ),
+    )
+    purchase_order_reference = serializers.CharField(
+        max_length=100,
+        required=False,
+        default="",
+        allow_blank=True,
+        help_text=(
+            "Buyer's internal purchase-order reference (e.g. 'PO-2026-00042'). "
+            "Printed on the invoice for reconciliation."
+        ),
+    )
+
+    def validate(self, attrs):
+        if not any([
+            attrs.get("company_name"),
+            attrs.get("tax_number"),
+            attrs.get("purchase_order_reference"),
+        ]):
+            raise serializers.ValidationError(
+                "At least one of company_name, tax_number, or "
+                "purchase_order_reference must be provided."
+            )
+        return attrs
+
+
 class CartCheckoutSerializer(serializers.Serializer):
     """Input for ``POST /api/v1/cart/checkout``.
 
@@ -217,6 +269,18 @@ class CartReadSerializer(serializers.Serializer):
     version = serializers.IntegerField(
         read_only=True,
         help_text="Optimistic concurrency token — incremented on every mutation.",
+    )
+    company_name = serializers.CharField(
+        read_only=True,
+        help_text="Legal company name of the B2B buyer (empty for B2C orders).",
+    )
+    tax_number = serializers.CharField(
+        read_only=True,
+        help_text="VAT/GST/tax registration number of the buyer organisation.",
+    )
+    purchase_order_reference = serializers.CharField(
+        read_only=True,
+        help_text="Buyer's internal purchase-order reference for reconciliation.",
     )
     items = serializers.SerializerMethodField()
     applied_coupons = serializers.SerializerMethodField()

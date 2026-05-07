@@ -7,14 +7,15 @@ resource-oriented ``<uuid:cart_id>/checkout/`` route under the ``carts/``
 
 Endpoint layout
 ---------------
-GET  /api/v1/cart/                      CartReadView
-POST /api/v1/cart/add-product/          AddProductView
-POST /api/v1/cart/remove-product/       RemoveProductView
-POST /api/v1/cart/add-coupon/           ApplyCouponView
-POST /api/v1/cart/remove-coupon/        RemoveCouponView
-POST /api/v1/cart/add-address/          AddAddressView
-POST /api/v1/cart/add-payment-method/   AddPaymentMethodView
-POST /api/v1/cart/checkout/             CartCheckoutView
+GET  /api/v1/cart/                           CartReadView
+POST /api/v1/cart/add-product/               AddProductView
+POST /api/v1/cart/remove-product/            RemoveProductView
+POST /api/v1/cart/add-coupon/                ApplyCouponView
+POST /api/v1/cart/remove-coupon/             RemoveCouponView
+POST /api/v1/cart/add-address/               AddAddressView
+POST /api/v1/cart/add-payment-method/        AddPaymentMethodView
+POST /api/v1/cart/set-business-details/      SetBusinessDetailsView
+POST /api/v1/cart/checkout/                  CartCheckoutView
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from apps.cart.views import (
     CartReadView,
     RemoveCouponView,
     RemoveProductView,
+    SetBusinessDetailsView,
 )
 
 app_name = "cart_actions"
@@ -55,6 +57,9 @@ urlpatterns = [
 
     # POST /api/v1/cart/add-payment-method/
     path("add-payment-method/", AddPaymentMethodView.as_view(), name="add-payment-method"),
+
+    # POST /api/v1/cart/set-business-details/
+    path("set-business-details/", SetBusinessDetailsView.as_view(), name="set-business-details"),
 
     # POST /api/v1/cart/checkout/
     path("checkout/", CartCheckoutView.as_view(), name="checkout"),

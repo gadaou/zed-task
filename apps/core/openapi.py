@@ -205,6 +205,38 @@ def problem_response(
 # ---------------------------------------------------------------------------
 
 
+def b2b_request_examples() -> list[OpenApiExample]:
+    """Two request body examples for the set-business-details endpoint."""
+    return [
+        OpenApiExample(
+            name="Full B2B details",
+            summary="All three B2B fields supplied",
+            description=(
+                "A corporate buyer supplies their company name, VAT number, and "
+                "internal PO reference so all three appear on the invoice."
+            ),
+            value={
+                "company_name": "Acme Corp Ltd",
+                "tax_number": "GB123456789",
+                "purchase_order_reference": "PO-2026-00042",
+            },
+            request_only=True,
+        ),
+        OpenApiExample(
+            name="PO reference only",
+            summary="Only the purchase-order reference is required",
+            description=(
+                "Minimal B2B call: the buyer provides only the PO reference for "
+                "internal reconciliation. company_name and tax_number default to ''."
+            ),
+            value={
+                "purchase_order_reference": "PO-2026-00099",
+            },
+            request_only=True,
+        ),
+    ]
+
+
 def checkout_request_examples() -> list[OpenApiExample]:
     """Four request body examples for the checkout endpoint."""
     return [

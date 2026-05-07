@@ -170,6 +170,69 @@ def lock_active_cart_for_update(tenant_id: UUID, user_id: UUID) -> Cart:
 
 
 @transaction.atomic
+def set_business_details(
+    cart: Cart,
+    *,
+    company_name: str = "",
+    tax_number: str = "",
+    purchase_order_reference: str = "",
+) -> Cart:
+    """Set B2B buyer-metadata fields on ``cart``.
+
+    Acquires a row lock, writes only the supplied fields, and bumps ``version``
+    (PROJECT_SPEC §3.4).  The fields are snapshotted onto the Order at
+    checkout time by ``CheckoutService._run_checkout_transaction``.
+
+    Args:
+        cart:                      The Cart aggregate to mutate.
+        company_name:              Legal company name of the B2B buyer.
+        tax_number:                VAT/GST/tax registration number.
+        purchase_order_reference:  Buyer's internal PO reference.
+
+    Returns:
+        The same Cart instance with B2B fields and ``version`` refreshed.
+    """
+    t0 = time.monotonic()
+    try:
+        locked = Cart.objects.select_for_update().get(pk=cart.pk)
+        locked.company_name = company_name
+        locked.tax_number = tax_number
+        locked.purchase_order_reference = purchase_order_reference
+        locked.version = F("version") + 1
+        locked.save(
+            update_fields=[
+                "company_name",
+                "tax_number",
+                "purchase_order_reference",
+                "version",
+                "updated_at",
+            ]
+        )
+        locked.refresh_from_db(
+            fields=["company_name", "tax_number", "purchase_order_reference", "version"]
+        )
+        schedule_cart_cache_invalidation(locked.tenant_id, locked.user_id)
+    except Exception:
+        log_event(
+            logger,
+            "cart.set_business_details",
+            level=logging.ERROR,
+            outcome="failed",
+            cart_id=str(cart.pk),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        raise
+    log_event(
+        logger,
+        "cart.set_business_details",
+        outcome="success",
+        cart_id=str(cart.pk),
+        duration_ms=round((time.monotonic() - t0) * 1000),
+    )
+    return locked
+
+
+@transaction.atomic
 def set_cart_address(cart: Cart, address: "Address") -> Cart:
     """Set ``address`` as the selected shipping address on ``cart``.
 
