@@ -71,8 +71,18 @@ from apps.core.openapi import (
     IDEMPOTENCY_KEY_HEADER,
     TENANT_DOMAIN_HEADER,
     USER_ID_HEADER,
+    X_REQUEST_ID_HEADER,
+    add_address_examples,
+    add_payment_method_examples,
+    add_product_examples,
+    apply_coupon_examples,
     b2b_request_examples,
+    cart_read_response_examples,
+    checkout_request_examples,
+    checkout_response_examples,
     problem_response,
+    remove_coupon_examples,
+    remove_product_examples,
 )
 from apps.core.throttling import TenantUserScopedThrottle
 from apps.core.responses import map_exception, problem, validation_problem
@@ -195,7 +205,7 @@ class CartReadView(APIView):
             "created on the first call if none exists."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         responses={
             200: OpenApiResponse(
                 response=CartReadSerializer,
@@ -203,6 +213,7 @@ class CartReadView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=cart_read_response_examples(),
     )
     def get(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -247,7 +258,7 @@ class AddProductView(APIView):
             "Rate limit: **60 requests / minute** per tenant + user."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=AddProductSerializer,
         responses={
             200: OpenApiResponse(
@@ -266,6 +277,7 @@ class AddProductView(APIView):
             ),
             429: _RATE_LIMIT_RESPONSE,
         },
+        examples=add_product_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -323,7 +335,7 @@ class RemoveProductView(APIView):
             "succeeds silently and returns the unchanged cart."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=RemoveProductSerializer,
         responses={
             200: OpenApiResponse(
@@ -332,6 +344,7 @@ class RemoveProductView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=remove_product_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -374,7 +387,7 @@ class ApplyCouponView(APIView):
             "already applied to this cart."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=ApplyCouponSerializer,
         responses={
             200: OpenApiResponse(
@@ -383,6 +396,7 @@ class ApplyCouponView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=apply_coupon_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -423,7 +437,7 @@ class RemoveCouponView(APIView):
             "**Idempotent** — removing a coupon that is not applied is a no-op."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=RemoveCouponSerializer,
         responses={
             200: OpenApiResponse(
@@ -432,6 +446,7 @@ class RemoveCouponView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=remove_coupon_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -482,7 +497,7 @@ class AddAddressView(APIView):
             "This address is required before calling `POST /cart/checkout/`."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=AddAddressSerializer,
         responses={
             200: OpenApiResponse(
@@ -491,6 +506,7 @@ class AddAddressView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=add_address_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -545,7 +561,7 @@ class AddPaymentMethodView(APIView):
             "Returns `422` if `gateway_slug` is not a registered gateway."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=AddPaymentMethodSerializer,
         responses={
             200: OpenApiResponse(
@@ -554,6 +570,7 @@ class AddPaymentMethodView(APIView):
             ),
             **_CART_COMMON_ERRORS,
         },
+        examples=add_payment_method_examples(),
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)
@@ -608,7 +625,7 @@ class SetBusinessDetailsView(APIView):
             "the previous values."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
         request=SetBusinessDetailsSerializer,
         examples=b2b_request_examples(),
         responses={
@@ -688,7 +705,13 @@ class CartCheckoutView(APIView):
             "be created for the next purchase."
         ),
         tags=["Cart"],
-        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, IDEMPOTENCY_KEY_HEADER],
+        parameters=[
+            TENANT_DOMAIN_HEADER,
+            USER_ID_HEADER,
+            IDEMPOTENCY_KEY_HEADER,
+            X_REQUEST_ID_HEADER,
+        ],
+        request=CartCheckoutSerializer,
         responses={
             202: OpenApiResponse(
                 response=CheckoutResponseSerializer,
@@ -743,6 +766,10 @@ class CartCheckoutView(APIView):
             ),
             429: _RATE_LIMIT_RESPONSE,
         },
+        examples=[
+            *checkout_request_examples(),
+            *checkout_response_examples(),
+        ],
     )
     def post(self, request: Request) -> Response:
         user_id, err = _user_id_required(request)

@@ -30,6 +30,7 @@ Output serializers
 
 from __future__ import annotations
 
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.catalog.models import Product  # noqa: F401 — used by help_text examples
@@ -295,12 +296,14 @@ class CartReadSerializer(serializers.Serializer):
         qs = cart.applied_coupons.select_related("coupon").all()
         return AppliedCouponSerializer(qs, many=True).data  # type: ignore[return-value]
 
+    @extend_schema_field(SelectedAddressSerializer)
     def get_selected_address(self, cart):  # type: ignore[override]
         if cart.selected_address_id is None:
             return None
         addr = cart.selected_address
         return SelectedAddressSerializer(addr).data
 
+    @extend_schema_field(SelectedPaymentMethodSerializer)
     def get_selected_payment_method(self, cart):  # type: ignore[override]
         if cart.selected_payment_method_id is None:
             return None

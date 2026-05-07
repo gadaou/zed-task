@@ -43,6 +43,7 @@ from apps.core.openapi import (
     IDEMPOTENCY_KEY_HEADER,
     TENANT_DOMAIN_HEADER,
     USER_ID_HEADER,
+    X_REQUEST_ID_HEADER,
     checkout_request_examples,
     checkout_response_examples,
     problem_response,
@@ -160,6 +161,7 @@ class CheckoutView(APIView):
             TENANT_DOMAIN_HEADER,
             USER_ID_HEADER,
             IDEMPOTENCY_KEY_HEADER,
+            X_REQUEST_ID_HEADER,
             OpenApiParameter(
                 name="cart_id",
                 type=OpenApiTypes.UUID,

@@ -51,7 +51,7 @@ def _check_redis() -> tuple[bool, str]:
 
 
 @extend_schema(
-    tags=["Core"],
+    tags=["Health"],
     summary="Liveness probe",
     description=(
         "Lightweight process liveness check. Does not touch PostgreSQL or Redis. "
@@ -79,7 +79,7 @@ def health(_request: Request) -> Response:
 
 
 @extend_schema(
-    tags=["Core"],
+    tags=["Health"],
     summary="Readiness probe",
     description=(
         "Dependency readiness check. Verifies PostgreSQL and Redis connectivity. "
