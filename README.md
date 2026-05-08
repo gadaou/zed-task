@@ -26,6 +26,24 @@ docker compose exec web pytest -q
 
 `make` shortcuts are available for each step: `make up` / `make seed` / `make swagger` / `make test`. See [Setup and Commands](#7-setup-and-commands) for the full reference.
 
+## How to Review This Project in 5 Minutes
+
+```bash
+docker compose up --build -d
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py seed_demo_data
+open http://localhost:8000/api/docs/
+docker compose exec web pytest -q
+```
+
+`seed_demo_data` prints ready-to-use curl examples for checking the cart and checkout flow immediately.
+
+Read next:
+- [RUNBOOK.md](RUNBOOK.md)
+- [FINAL_REVIEW.md](FINAL_REVIEW.md)
+- [docs/final-verification.md](docs/final-verification.md)
+- [docs/diagrams/](docs/diagrams/)
+
 ---
 
 ## Architecture at a Glance
@@ -39,6 +57,25 @@ Requests enter through thin DRF views, are dispatched to a service layer that ow
 | [Data Model ERD](docs/diagrams/data-model-erd.md) | All 13 persistent models and every FK / association across 8 apps |
 
 Full diagram index (tenant flow, payment FSM, invoice, cache, B2B): [`docs/diagrams/`](docs/diagrams/).
+
+---
+
+## Architecture Decisions and Trade-offs
+
+The load-bearing choices behind the codebase, surfaced up front so reviewers do not have to reverse-engineer them.
+
+- **Shared PostgreSQL with `tenant_id`.** All tenants live in one schema. Every model inherits `TenantAwareModel`, every composite index leads with `tenant_id`, and isolation is enforced in three independent layers (middleware, ORM manager, schema indexes). This is operationally cheap — one migration, one connection pool, one backup target — and sharding-ready: Citus can distribute by `tenant_id` without application changes. Accepted cost: a primary-DB outage is global, mitigated by HA replicas rather than per-tenant databases.
+- **PostgreSQL as the sole source of truth.** No durable business state lives in Redis. Carts, orders, payments, idempotency records, and invoice numbering all persist in Postgres. A Redis flush does not lose durable business data; at worst it affects ephemeral coordination state such as cache entries, rate-limit counters, locks, or in-flight idempotency sentinels. Durable replay across Redis restarts is provided by the Postgres `IdempotencyRecord` table.
+- **Redis for coordination, not storage.** Five distinct ephemeral roles, every key namespaced by `tenant_id`:
+  - Distributed checkout lock — `SET NX PX` with Lua-fenced compare-token-then-`DEL` release.
+  - Idempotency in-progress sentinel — fast detection ahead of the durable Postgres record.
+  - Cart read-through cache — stable key `cart:read:{tenant}:{user}`, `DEL`-invalidated post-commit via [`schedule_cart_cache_invalidation`](apps/core/cache.py), TTL safety net (default 60s).
+  - Per-`(tenant, user, action)` rate limiting — fixed-window `INCR + EXPIRE` in [`apps/core/throttling.py`](apps/core/throttling.py); one tenant cannot starve another's allowance.
+  - Celery broker and result backend — three named queues: `payments`, `invoices`, `notifications`.
+- **Celery for async payment and invoice workflows.** Payment authorization and PDF invoice generation run off the request path. Every dispatch goes through `transaction.on_commit`, so a rolled-back transaction never enqueues a payment task and an unpaid order never enqueues an invoice. Workers run with `acks_late=True` and prefetch 1; every task is written idempotently (status-guarded UPDATEs, `OneToOneField(Order)` on `Invoice`) so Celery re-deliveries are safe no-ops.
+- **Dummy payment gateways instead of real provider integrations.** The `PaymentGateway` ABC plus `dummy_success` / `dummy_failing` / `dummy_timeout` prove the contract deterministically without coupling the codebase to provider-specific concerns (3DS flows, webhook verification, partial-capture quirks). Adding a real gateway is three steps — subclass the ABC, register the slug in `AppConfig.ready()`, run the shared contract test base — with zero changes to the service or task layers. See [`docs/payment-gateways.md`](docs/payment-gateways.md).
+- **`X-User-Id` as an interim identity contract.** No `auth.User`, no JWT verification, no session cookies in this service. The API gateway is assumed to validate the customer token and inject `X-User-Id` (UUID) on every cart/checkout request; [`apps/core/middleware.py`](apps/core/middleware.py) binds it into a `ContextVar` so log records carry it automatically. The cart aggregate stores `user_id` as a bare `UUIDField` rather than a foreign key, keeping the bounded context independent of any specific identity provider — real auth becomes a middleware swap, not a model migration.
+- **Checkout prioritizes consistency over aggressive caching.** Cart reads use short-lived read-through caching with explicit invalidation (stable key, post-commit `DEL`, TTL safety net). Checkout itself bypasses the cache: every row is re-read under `SELECT FOR UPDATE`, coupons + stock + totals are revalidated against live Postgres data, and stock deduction uses conditional `UPDATE … WHERE stock >= qty`. Caching the checkout payload would trade milliseconds of latency for a class of correctness bugs — overselling, stale coupon reuse, lost-update on totals — that this service deliberately rejects.
 
 ---
 
@@ -74,17 +111,13 @@ Full step-by-step flows with sequence diagrams: [`docs/architecture.md`](docs/ar
 
 ---
 
-## 4. Trade-offs and Future Scale Path
+## 4. Future Scale Path
 
-**Shared schema vs separate databases.** All tenants share one PostgreSQL cluster (shared-schema model). This keeps operational overhead minimal — one migration run, zero per-tenant onboarding cost — and the schema is already sharding-ready because `tenant_id` leads every composite index. The accepted cost is a larger blast radius if the primary DB degrades; per-tenant DB isolation is a future migration path, not a redesign.
+The architectural rationale lives in [Architecture Decisions and Trade-offs](#architecture-decisions-and-trade-offs) above; this section captures only the forward-looking levers that are deliberately deferred today.
 
-**Redis as Celery broker vs RabbitMQ.** Redis was chosen to keep the deployment to a single additional service. The payment domain logic is fully decoupled from transport: swapping to RabbitMQ requires only a `CELERY_BROKER_URL` change. Redis-as-broker is appropriate at this scale; RabbitMQ's per-queue durability guarantees and dead-letter routing become worthwhile at higher throughput.
+**Redis as Celery broker vs RabbitMQ.** Redis was chosen to keep the deployment to a single additional service. The payment domain logic is fully decoupled from transport: swapping to RabbitMQ is a `CELERY_BROKER_URL` change with no service-code edits. Redis-as-broker is appropriate at this scale; RabbitMQ's per-queue durability guarantees and dead-letter routing become worthwhile at higher throughput.
 
-**PostgreSQL as the sole system of record.** Redis holds no durable state — locks and idempotency sentinels are ephemeral by design. If Redis flushes, in-flight checkouts may see `409 lock-contention` until TTLs expire, but no data is lost. PostgreSQL `IdempotencyRecord` rows provide durable replay even across Redis restarts.
-
-**Read replicas and sharding are deferred.** The principle is "no premature distribution". The database is debuggable by one engineer. When vertical scaling is exhausted, `tenant_id`-leading indexes and the `all_tenants()` manager escape hatch are already in place for routing reads to replicas or migrating to Citus without schema changes.
-
-**No real payment gateway.** The clean `PaymentGateway` interface is proven against deterministic dummies (`dummy_success`, `dummy_failing`, `dummy_timeout`) before any provider coupling is introduced. Provider-specific concerns — 3DS flows, webhook verification, error-code mapping — are explicitly out of scope for this assessment. Adding a real gateway requires only subclassing `PaymentGateway` and registering the slug. See [`docs/payment-gateways.md`](docs/payment-gateways.md).
+**Read replicas and sharding are deferred.** The principle is "no premature distribution". The database is debuggable by one engineer today. When vertical scaling is exhausted, `tenant_id`-leading indexes and the explicitly-named `all_tenants()` manager escape hatch are already in place for routing reads to replicas or migrating to Citus without schema changes.
 
 ---
 
