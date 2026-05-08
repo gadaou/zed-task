@@ -535,52 +535,52 @@ sequenceDiagram
     participant CeleryWorker as Celery Worker
     participant PaymentGateway as Payment Gateway
 
-    Client->>DjangoApp: POST /v1/carts/{id}/checkout<br/>(Idempotency-Key: &lt;uuid&gt;)
+    Client->>DjangoApp: "POST /v1/carts/{id}/checkout (Idempotency-Key: <uuid>)"
 
     note over DjangoApp,Redis: Step 1 — Idempotency check
-    DjangoApp->>Redis: GET idempotency:{tenant}:{key}
-    Redis-->>DjangoApp: miss (first request)
+    DjangoApp->>Redis: "GET idempotency:{tenant}:{key}"
+    Redis-->>DjangoApp: "miss (first request)"
 
     note over DjangoApp,Redis: Step 2 — Acquire distributed lock
-    DjangoApp->>Redis: SET lock:checkout:{tenant}:{cart} &lt;token&gt; NX PX &lt;ttl&gt;
-    Redis-->>DjangoApp: OK (lock acquired)
+    DjangoApp->>Redis: "SET lock:checkout:{tenant}:{cart} <token> NX PX <ttl>"
+    Redis-->>DjangoApp: "OK (lock acquired)"
 
     note over DjangoApp,PostgreSQL: Steps 3–10 run inside transaction.atomic()
-    DjangoApp->>PostgreSQL: BEGIN
+    DjangoApp->>PostgreSQL: "BEGIN"
 
     note over DjangoApp,PostgreSQL: Step 3 — Lock cart row
-    DjangoApp->>PostgreSQL: SELECT * FROM cart WHERE id=? FOR UPDATE
+    DjangoApp->>PostgreSQL: "SELECT * FROM cart WHERE id=? FOR UPDATE"
 
     note over DjangoApp,PostgreSQL: Step 4 — Revalidate coupons
-    DjangoApp->>PostgreSQL: SELECT * FROM coupon WHERE id IN (...) FOR UPDATE
-    DjangoApp->>PostgreSQL: validate constraints + recompute discounts
+    DjangoApp->>PostgreSQL: "SELECT * FROM coupon WHERE id IN (...) FOR UPDATE"
+    DjangoApp->>PostgreSQL: "validate constraints + recompute discounts"
 
     note over DjangoApp,PostgreSQL: Step 5 — Validate stock
-    DjangoApp->>PostgreSQL: SELECT stock FROM product WHERE id IN (...)
+    DjangoApp->>PostgreSQL: "SELECT stock FROM product WHERE id IN (...)"
 
     note over DjangoApp,PostgreSQL: Step 6 — Create order + payment intent
-    DjangoApp->>PostgreSQL: INSERT INTO orders (cart snapshot, totals)
-    DjangoApp->>PostgreSQL: INSERT INTO payment_intent (status=requires_confirmation)
+    DjangoApp->>PostgreSQL: "INSERT INTO orders (cart snapshot, totals)"
+    DjangoApp->>PostgreSQL: "INSERT INTO payment_intent (status=requires_confirmation)"
 
     note over DjangoApp,PostgreSQL: Step 7 — Deduct stock
-    DjangoApp->>PostgreSQL: UPDATE product SET stock = stock - qty WHERE id=?
+    DjangoApp->>PostgreSQL: "UPDATE product SET stock = stock - qty WHERE id=?"
 
     note over DjangoApp,PostgreSQL: Step 8 — Record idempotency result
-    DjangoApp->>PostgreSQL: INSERT INTO idempotency_record (key, status=success, response)
+    DjangoApp->>PostgreSQL: "INSERT INTO idempotency_record (key, status=success, response)"
 
     note over DjangoApp,PostgreSQL: Step 9 — Commit
-    DjangoApp->>PostgreSQL: COMMIT
+    DjangoApp->>PostgreSQL: "COMMIT"
 
     note over DjangoApp,Redis: Step 10 — Release lock
-    DjangoApp->>Redis: EVAL "if GET key == token then DEL key" (Lua)
+    DjangoApp->>Redis: "EVAL 'if GET key == token then DEL key' (Lua)"
 
     note over DjangoApp,CeleryWorker: Step 11 — Trigger async payment (on_commit)
-    DjangoApp->>Redis: LPUSH celery:payments {task: authorize, payment_intent_id}
-    Redis-->>CeleryWorker: task dequeued
-    CeleryWorker->>PaymentGateway: authorize(charge)
-    PaymentGateway-->>CeleryWorker: AuthorizationResult
+    DjangoApp->>Redis: "LPUSH celery:payments {task: authorize, payment_intent_id}"
+    Redis-->>CeleryWorker: "task dequeued"
+    CeleryWorker->>PaymentGateway: "authorize(charge)"
+    PaymentGateway-->>CeleryWorker: "AuthorizationResult"
 
-    DjangoApp-->>Client: 202 Accepted {payment_status: "pending"}
+    DjangoApp-->>Client: "202 Accepted {payment_status: 'pending'}"
 ```
 
 **Key Guarantees:**

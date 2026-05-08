@@ -11,9 +11,15 @@ This document describes the test strategy for `cart_system`, explains how to run
 The project uses a `.venv` virtual environment at the repo root.
 
 ```bash
+# Create venv if needed, then install runtime, test, and lint tooling (includes pinned Ruff)
+python3 -m venv .venv
+pip install -r requirements-dev.txt
+
 # Activate the venv (optional — all commands below prefix it explicitly)
 source .venv/bin/activate
 ```
+
+If your local `.env` points `DATABASE_URL` to PostgreSQL, either start Postgres through Docker Compose or override `DATABASE_URL=sqlite:///:memory:` for the fast local test suite.
 
 ### Run the full suite
 

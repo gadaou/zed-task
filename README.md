@@ -180,12 +180,14 @@ docker compose exec web python manage.py seed_demo_data   # load demo data
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime + test deps and pinned Ruff (lint/format)
 cp .env.example .env                       # set DATABASE_URL and REDIS_URL
 python manage.py migrate
 python manage.py seed_demo_data
 DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 ```
+
+If your local `.env` points `DATABASE_URL` to PostgreSQL, either start Postgres through Docker Compose or override `DATABASE_URL=sqlite:///:memory:` for the fast local test suite.
 
 ### Settings modules
 
@@ -221,6 +223,7 @@ Full details: [`docs/observability.md`](docs/observability.md).
 ├── .env.example
 ├── manage.py
 ├── requirements.txt
+├── requirements-dev.txt
 ├── cart_system/
 │   ├── settings/              ← base / dev / prod / test
 │   ├── urls.py
@@ -264,6 +267,25 @@ Each app follows the same internal layout: `models.py` → `services.py` → `vi
 | [`docs/payment-gateways.md`](docs/payment-gateways.md) | Gateway interface contract, registration pattern, adding real gateways, testing |
 | [`docs/test-quality-summary.md`](docs/test-quality-summary.md) | Test counts by category, feature coverage, concurrency and idempotency test notes |
 | [`docs/diagrams/`](docs/diagrams/) | 8 Mermaid diagrams: system architecture, checkout sequence, ERD, tenant isolation, payment FSM, invoice generation, cache/locks, B2B flow |
+
+---
+
+## Architecture Flowcharts
+
+These diagrams summarize the main runtime flows, data boundaries, and reliability mechanisms used by the platform.
+
+| Diagram | What it explains | Why it matters |
+|---|---|---|
+| [System Architecture](docs/diagrams/system-architecture.md) | How clients, DRF, the service layer, PostgreSQL, Redis, Celery, and payment and invoice paths fit together. | Gives reviewers a single map of components before diving into code or deeper diagrams. |
+| [Data Model ERD](docs/diagrams/data-model-erd.md) | Tenant-owned models and how cart, order, payment, and invoice entities relate, including key constraints. | Clarifies persistence boundaries and FK relationships across apps in one view. |
+| [Checkout Sequence](docs/diagrams/checkout-sequence.md) | Idempotency checks, Redis lock acquisition, the DB transaction, stock updates, and async work dispatched after commit. | Shows where correctness and concurrency guarantees are enforced end-to-end. |
+| [Tenant Isolation](docs/diagrams/tenant-isolation-flow.md) | Resolution from `X-Tenant-Domain` through middleware and `ContextVar` to `TenantAwareManager` and 404-style isolation. | Makes the multi-tenant enforcement path explicit for security and data-leak reviews. |
+| [Payment Flow](docs/diagrams/payment-flow.md) | Gateway registry, dummy gateways for tests, payment state transitions, and retry behavior. | Documents how money-moving logic stays pluggable and safe under worker retries. |
+| [Invoice Flow](docs/diagrams/invoice-flow.md) | Two-phase invoice creation, per-tenant numbering, and retry-safe PDF generation. | Explains durable billing artifacts and crash recovery around PDF creation. |
+| [Cache / Idempotency / Locks](docs/diagrams/cache-idempotency-locks.md) | Cart cache invalidation, durable idempotency records, and the Lua-fenced Redis checkout lock. | Ties together caching, replay semantics, and lock safety without reading three separate areas first. |
+| [B2B Flow](docs/diagrams/b2b-flow.md) | Business fields on the cart, how they snapshot onto the order, and how invoices consume that data. | Helps reviewers trace B2B-specific data from API through fulfillment documents. |
+
+GitHub renders Mermaid diagrams directly from these markdown files.
 
 ---
 
