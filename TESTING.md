@@ -29,7 +29,7 @@ If your local `.env` points `DATABASE_URL` to PostgreSQL, either start Postgres 
 pytest -q
 ```
 
-Expected result: **360 passed, 5 skipped, 0 failures** (365 nodes collected; the difference from 347 `def test_*` functions comes from `pytest.mark.parametrize` expansion). The 5 skips are intentional. `PaymentGatewayContractTests` calls `pytest.skip()` when a contract branch does not apply to the concrete gateway implementation (for example, a decline-only assertion on `DummySuccessGateway`).
+Expected result: **393 passed, 5 skipped, 0 failures** (398 nodes collected; the difference from 380 `def test_*` functions comes from `pytest.mark.parametrize` expansion). The 5 skips are intentional. `PaymentGatewayContractTests` calls `pytest.skip()` when a contract branch does not apply to the concrete gateway implementation (for example, a decline-only assertion on `DummySuccessGateway`).
 
 ### Filter to a specific domain or test name
 
@@ -89,7 +89,7 @@ Every domain model is a `TenantAwareModel`; the `TenantAwareManager` injects `WH
 - `TenantAwareManager` raises `TenantContextMissing` outside a context; `.all_tenants()` bypasses the filter for admin use.
 - The same `user_id` can hold one `ACTIVE` cart per tenant with no collision.
 - `GET /api/v1/carts/{id}/checkout/` under tenant A with a cart from tenant B returns 404 — no cross-tenant data leaks.
-- `POST /api/v1/cart/add-product/` with a product from tenant B returns 404 under tenant A.
+- `POST /api/v1/cart/items/` with a product from tenant B returns 404 under tenant A.
 
 ### Cart Add / Remove Product
 

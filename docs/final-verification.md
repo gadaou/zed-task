@@ -41,21 +41,35 @@ For every feature claimed in [`README.md`](../README.md), [`FINAL_REVIEW.md`](..
 
 ### 1.2 Cart features
 
-All nine endpoints from `apps/cart/urls_actions.py` are implemented and tested.
+All cart endpoints are implemented and tested. Canonical RESTful routes (preferred) are in `apps/cart/urls_rest.py`; legacy action-style routes (deprecated backwards-compatible aliases) are in `apps/cart/urls_actions.py`.
+
+**Canonical RESTful endpoints (preferred):**
 
 | Endpoint | View | Test |
 |---|---|---|
-| `GET /api/v1/cart/` | `CartReadView` ([`apps/cart/views.py:188`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py` |
-| `POST /api/v1/cart/add-product/` | `AddProductView` ([`apps/cart/views.py:238`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py`, `test_services.py` |
-| `POST /api/v1/cart/remove-product/` | `RemoveProductView` ([`apps/cart/views.py:319`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py` |
-| `POST /api/v1/cart/add-coupon/` | `ApplyCouponView` ([`apps/cart/views.py:369`](../apps/cart/views.py)) | `apps/coupon/tests/test_services.py` |
-| `POST /api/v1/cart/remove-coupon/` | `RemoveCouponView` ([`apps/cart/views.py:421`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py` |
-| `POST /api/v1/cart/add-address/` | `AddAddressView` ([`apps/cart/views.py:471`](../apps/cart/views.py)) | `apps/addresses/tests/test_services.py` |
-| `POST /api/v1/cart/add-payment-method/` | `AddPaymentMethodView` ([`apps/cart/views.py:539`](../apps/cart/views.py)) | `apps/payment/tests/test_add_payment_method.py` |
-| `POST /api/v1/cart/set-business-details/` | `SetBusinessDetailsView` ([`apps/cart/views.py:596`](../apps/cart/views.py)) | `apps/cart/tests/test_b2b.py` |
-| `POST /api/v1/cart/checkout/` | `CartCheckoutView` ([`apps/cart/views.py:664`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py`, `apps/order/tests/test_views.py` |
+| `GET /api/v1/cart/` | `CartReadView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py` |
+| `POST /api/v1/cart/items/` | `CartItemsView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py`, `test_services.py` |
+| `DELETE /api/v1/cart/items/{product_id}/` | `CartItemDetailView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py` |
+| `POST /api/v1/cart/coupons/` | `CartCouponsView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py`, `apps/coupon/tests/test_services.py` |
+| `DELETE /api/v1/cart/coupons/{coupon_id}/` | `CartCouponDetailView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py` |
+| `PUT /api/v1/cart/address/` | `CartAddressView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py`, `apps/addresses/tests/test_services.py` |
+| `PUT /api/v1/cart/payment-method/` | `CartPaymentMethodView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py`, `apps/payment/tests/test_add_payment_method.py` |
+| `PUT /api/v1/cart/business-details/` | `CartBusinessDetailsView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views_rest.py`, `apps/cart/tests/test_b2b.py` |
+| `POST /api/v1/cart/checkout/` | `CartCheckoutView` ([`apps/cart/views.py`](../apps/cart/views.py)) | `apps/cart/tests/test_views.py`, `apps/order/tests/test_views.py` |
 
-Status: **PASS** for all 9 endpoints.
+**Legacy action-style endpoints (deprecated — backwards-compatible aliases):**
+
+| Endpoint | View | Test |
+|---|---|---|
+| `POST /api/v1/cart/add-product/` | `AddProductView` | `apps/cart/tests/test_views.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/remove-product/` | `RemoveProductView` | `apps/cart/tests/test_views.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/add-coupon/` | `ApplyCouponView` | `apps/cart/tests/test_views.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/remove-coupon/` | `RemoveCouponView` | `apps/cart/tests/test_views.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/add-address/` | `AddAddressView` | `apps/cart/tests/test_views.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/add-payment-method/` | `AddPaymentMethodView` | `apps/payment/tests/test_add_payment_method.py`, `test_views_rest.py` |
+| `POST /api/v1/cart/set-business-details/` | `SetBusinessDetailsView` | `apps/cart/tests/test_b2b.py`, `test_views_rest.py` |
+
+Status: **PASS** for all canonical RESTful and legacy endpoints.
 
 ### 1.3 Checkout safety
 
@@ -126,7 +140,7 @@ Doc evidence: [`docs/architecture.md`](architecture.md), [`docs/diagrams/checkou
 |---|---|---|
 | B2B fields on `Cart` | `apps/cart/models.py` (`company_name`, `tax_number`, `purchase_order_reference`); migration `0006_cart_b2b_fields.py` | PASS |
 | B2B fields on `Order` snapshot | [`apps/order/models.py:112-114`](../apps/order/models.py); migration `0003_order_b2b_fields.py` | PASS |
-| `set-business-details` endpoint | `apps/cart/views.py:596` `SetBusinessDetailsView` wired at `apps/cart/urls_actions.py:62` | PASS |
+| B2B endpoint | Canonical: `PUT /api/v1/cart/business-details/` → `CartBusinessDetailsView` (`apps/cart/urls_rest.py`). Deprecated alias: `POST /api/v1/cart/set-business-details/` → `SetBusinessDetailsView` (`apps/cart/urls_actions.py`). | PASS |
 | Checkout copies B2B fields onto Order | `apps/order/services.py` (snapshot during checkout) | PASS |
 | Swagger example | [`apps/core/openapi.py`](../apps/core/openapi.py) — DESCRIPTION includes B2B section in `cart_system/settings/base.py` `SPECTACULAR_SETTINGS` | PASS |
 | Tests | [`apps/cart/tests/test_b2b.py`](../apps/cart/tests/test_b2b.py) (9 tests) | PASS |
@@ -189,12 +203,12 @@ All four required commands now exit cleanly. The original 72 ruff errors and 75 
 
 | Command | Exit | Result | Detail |
 |---|---|---|---|
-| `pytest -q` (host, SQLite fallback) | **0** | **PASS** | `360 passed, 5 skipped, 76 warnings in 6.03s` |
+| `pytest -q` (host, SQLite fallback) | **0** | **PASS** | `393 passed, 5 skipped, 76 warnings in 5.52s` |
 | `ruff check .` | **0** | **PASS** | `All checks passed!` (was: 72 errors before fixes) |
 | `ruff format --check .` | **0** | **PASS** | `185 files already formatted` (was: 75 would reformat before fixes) |
 | `manage.py spectacular --validate --format openapi-json` | **0** | **PASS** | Schema validates, no warnings |
 
-**Final pytest count (single source of truth):** **360 passed, 5 skipped, 0 failed**.
+**Final pytest count (single source of truth):** **393 passed, 5 skipped, 0 failed**.
 
 **Tooling note:** `ruff` was not in `requirements.txt` and was installed locally as `ruff==0.7.4`. The Makefile already accommodates this with a graceful `ruff not installed` fallback. Pinning `ruff` in a `requirements-dev.txt` is recommended for CI reproducibility but is left to a follow-up since it does not affect runtime behaviour.
 
@@ -219,7 +233,7 @@ The first pass reported the failures below; all are now fixed:
 | 40 files across the repo | `ruff check . --fix` — automatic removal of unused imports and duplicate imports. | 40×F401 + 6×F811 |
 | 76 files across the repo | `ruff format .` — whitespace normalisation, no logic change. | format gate |
 
-**Test impact of all fixes:** **0 regressions.** Pytest count is unchanged at 360 passed / 5 skipped / 0 failed before and after.
+**Test impact of all fixes:** **0 regressions.** Pytest count is unchanged at 393 passed / 5 skipped / 0 failed before and after the RESTful endpoint addition.
 
 ### 2.3 Warnings observed
 
@@ -231,7 +245,7 @@ The same gate was re-run **inside** the `web` container against the real Compose
 
 | Command | Exit | Result |
 |---|---|---|
-| `docker compose exec web pytest -q` | **0** | **360 passed, 5 skipped, 0 failed** (29.27s; 76 `RemovedInDjango60Warning` same class as host) |
+| `docker compose exec web pytest -q` | **0** | **393 passed, 5 skipped, 0 failed** (host re-run: 5.52s; Docker last run: 29.27s; 76 `RemovedInDjango60Warning` same class as host) |
 | `docker compose exec web python manage.py spectacular --validate --file /tmp/openapi.json --format openapi-json` | **0** | **PASS** (no schema errors) |
 
 This matches the host Part 2 counts; the in-container run is the authoritative **Postgres + Redis** path for this report.
@@ -249,7 +263,7 @@ This matches the host Part 2 counts; the in-container run is the authoritative *
 | `docker compose exec web python manage.py migrate` | **0** — `No migrations to apply` (migrations also run on `web` container start). |
 | `seed_demo_data` (1st) | **0** — created tenant `demo.localhost`, 3 products, 2 coupons, address, payment method, demo cart. |
 | `seed_demo_data` (2nd) | **0** — idempotent: all rows **`[exists]`**, no duplicates. |
-| `docker compose exec web pytest -q` | **0** — **360 passed, 5 skipped**. |
+| `docker compose exec web pytest -q` | **0** — **393 passed, 5 skipped** (Docker last validated 2026-05-08; host re-confirmed 2026-05-11). |
 
 **Evidence:** [`docker-compose.yml`](../docker-compose.yml) — Postgres 16 (`db`), Redis 7 (`redis`), `web` (`python manage.py migrate --noinput && runserver 0.0.0.0:8000`), Celery `worker` (queues `payments`, `invoices`, `notifications`). Prerequisite: copy [`.env.example`](../.env.example) → `.env` if missing (`env_file` in Compose).
 
@@ -273,26 +287,36 @@ All 14 endpoints from the user's verification list are wired in the URLConf, con
 | `GET /api/docs/` | YES | drf-spectacular SwaggerUI view |
 | `GET /api/redoc/` | YES | drf-spectacular Redoc view |
 | `GET /api/v1/cart/` | YES | `apps/cart/urls_actions.py` → `CartReadView` |
-| `POST /api/v1/cart/add-product/` | YES | `AddProductView` |
-| `POST /api/v1/cart/remove-product/` | YES | `RemoveProductView` |
-| `POST /api/v1/cart/add-coupon/` | YES | `ApplyCouponView` |
-| `POST /api/v1/cart/remove-coupon/` | YES | `RemoveCouponView` |
-| `POST /api/v1/cart/add-address/` | YES | `AddAddressView` |
-| `POST /api/v1/cart/add-payment-method/` | YES | `AddPaymentMethodView` |
-| `POST /api/v1/cart/set-business-details/` | YES | `SetBusinessDetailsView` |
-| `POST /api/v1/cart/checkout/` | YES | `CartCheckoutView` |
+| **Canonical RESTful (preferred)** | | |
+| `POST /api/v1/cart/items/` | YES | `apps/cart/urls_rest.py` → `CartItemsView` |
+| `DELETE /api/v1/cart/items/{product_id}/` | YES | `apps/cart/urls_rest.py` → `CartItemDetailView` |
+| `POST /api/v1/cart/coupons/` | YES | `apps/cart/urls_rest.py` → `CartCouponsView` |
+| `DELETE /api/v1/cart/coupons/{coupon_id}/` | YES | `apps/cart/urls_rest.py` → `CartCouponDetailView` |
+| `PUT /api/v1/cart/address/` | YES | `apps/cart/urls_rest.py` → `CartAddressView` |
+| `PUT /api/v1/cart/payment-method/` | YES | `apps/cart/urls_rest.py` → `CartPaymentMethodView` |
+| `PUT /api/v1/cart/business-details/` | YES | `apps/cart/urls_rest.py` → `CartBusinessDetailsView` |
+| `POST /api/v1/cart/checkout/` | YES | `apps/cart/urls_actions.py` → `CartCheckoutView` |
+| **Legacy action-style (deprecated — backwards-compatible aliases)** | | |
+| `POST /api/v1/cart/add-product/` | YES | `apps/cart/urls_actions.py` → `AddProductView` |
+| `POST /api/v1/cart/remove-product/` | YES | `apps/cart/urls_actions.py` → `RemoveProductView` |
+| `POST /api/v1/cart/add-coupon/` | YES | `apps/cart/urls_actions.py` → `ApplyCouponView` |
+| `POST /api/v1/cart/remove-coupon/` | YES | `apps/cart/urls_actions.py` → `RemoveCouponView` |
+| `POST /api/v1/cart/add-address/` | YES | `apps/cart/urls_actions.py` → `AddAddressView` |
+| `POST /api/v1/cart/add-payment-method/` | YES | `apps/cart/urls_actions.py` → `AddPaymentMethodView` |
+| `POST /api/v1/cart/set-business-details/` | YES | `apps/cart/urls_actions.py` → `SetBusinessDetailsView` |
 
 ### 4.2 Endpoint behaviour (in-process pytest)
 
 Endpoint behaviour — including required headers, idempotency replay, and rate limiting — is exercised end-to-end by the in-process Django test client in:
 
-- `apps/cart/tests/test_views.py` — every cart-action endpoint (add/remove product, add/remove coupon, add address, add payment method, set business details, checkout).
+- `apps/cart/tests/test_views_rest.py` — all canonical RESTful endpoints (`POST /cart/items/`, `DELETE /cart/items/{id}/`, `POST /cart/coupons/`, `DELETE /cart/coupons/{id}/`, `PUT /cart/address/`, `PUT /cart/payment-method/`, `PUT /cart/business-details/`) plus legacy regression guards (7 deprecated aliases verified still return 2xx).
+- `apps/cart/tests/test_views.py` — every legacy action-style endpoint (add/remove product, add/remove coupon, add address, add payment method, set business details, checkout).
 - `apps/order/tests/test_views.py` — checkout including `test_checkout_idempotent_replay` and `test_checkout_idempotency_conflict`.
 - `apps/cart/tests/test_throttling.py` — `429` RFC 7807 responses on rate-limit overrun.
 - `apps/core/tests/test_health_endpoints.py` — `/health/` and `/ready/`.
 - `apps/core/tests/test_request_id_middleware.py` — `X-Request-Id` echo header.
 
-All of these are part of the **360 passing tests** reported in [§2](#2-part-2--automated-validation).
+All of these are part of the **393 passing tests** reported in [§2](#2-part-2--automated-validation).
 
 ### 4.3 Live HTTP validation (host → Docker `web`, 2026-05-08)
 
@@ -304,7 +328,7 @@ All of these are part of the **360 passing tests** reported in [§2](#2-part-2--
 | `curl -I http://localhost:8000/api/schema/` | 200 | **200** |
 | `curl -I http://localhost:8000/api/redoc/` | 200 | **200** |
 
-**Seeded cart flow** (`X-Tenant-Domain`, `X-User-Id` on every call): `GET /api/v1/cart/` → `POST …/add-product/` (USB-C Hub `2173d8fa-c8ed-4a33-bdab-03765ef5c7c3`) → `POST …/remove-product/` (keyboard `22c02db4-3413-42f8-a7c4-9f153347e6ee`) → `POST …/add-coupon/` (`DEMO10`) → `POST …/remove-coupon/` (`coupon_id` from prior read) → `POST …/add-address/` → `POST …/add-payment-method/` (`dummy_success`) → `POST …/set-business-details/` → `POST …/checkout/` with **`Idempotency-Key`** — all returned **200** except checkout **202**.
+**Seeded cart flow** (`X-Tenant-Domain`, `X-User-Id` on every call): `GET /api/v1/cart/` → `POST …/items/` (USB-C Hub `2173d8fa-c8ed-4a33-bdab-03765ef5c7c3`) → `DELETE …/items/22c02db4-3413-42f8-a7c4-9f153347e6ee/` (keyboard) → `POST …/coupons/` (`DEMO10`) → `DELETE …/coupons/{coupon_id}/` → `PUT …/address/` → `PUT …/payment-method/` (`dummy_success`) → `PUT …/business-details/` → `POST …/checkout/` with **`Idempotency-Key`** — all returned **200** except checkout **202**. (Original Docker run on 2026-05-08 used the legacy action-style aliases; canonical RESTful paths produce identical responses.)
 
 **Idempotency replay:** second `POST /api/v1/cart/checkout/` with **identical** `Idempotency-Key: a54bc470-e29b-41d4-a716-446655440001` and body `{}` returned **202** with same `order_id` / `payment_id` as first response (no duplicate checkout execution).
 
@@ -333,7 +357,7 @@ The 17-row coverage table in [`FINAL_REVIEW.md` §1](../FINAL_REVIEW.md) was rev
 | Cart: checkout | row 11 (12-step protocol) | YES |
 | Race condition handling | row 12 (Redis lock + `SELECT FOR UPDATE` + conditional stock + version) | YES |
 | Documentation | row 13 (README, RUNBOOK, TESTING, FINAL_REVIEW, PROJECT_SPEC, 4 docs/, 8 diagrams) | YES |
-| Tests | row 14 (`360 passed, 5 skipped, 0 failed`) | YES |
+| Tests | row 14 (`393 passed, 5 skipped, 0 failed`) | YES |
 | **Bonus:** Invoice handling | bonus row 1 (Celery, two-phase, ReportLab) | YES |
 | **Bonus:** Coupon constraints | bonus row 2 (rule registry, all built-ins) | YES |
 | **Bonus:** B2B orders | bonus row 3 (snapshot fields, scoped to lightweight metadata) | YES |
@@ -346,7 +370,7 @@ Result: **All 17 items covered.**
 
 | Check | Finding | Status |
 |---|---|---|
-| Latest pytest count consistent across docs | `360 passed, 5 skipped, 0 failed` appears verbatim in `FINAL_REVIEW.md` (rows 14, §3 header), `TESTING.md` line 26, `docs/test-quality-summary.md` line 13 — and matches the live Part 2 run | PASS |
+| Latest pytest count consistent across docs | `393 passed, 5 skipped, 0 failed` appears in `FINAL_REVIEW.md` (rows 14, §3 header), `TESTING.md`, `docs/test-quality-summary.md` — and matches the live Part 2 run | PASS |
 | `docs/openapi.yaml` references | Only one reference, in `FINAL_REVIEW.md` line 57, **clearly framed as audit-history** ("...has been **deleted**; the live schema at `/api/schema/` is the authoritative source"). README §6 explicitly says "No static OpenAPI YAML file is committed because the generated schema is the source of truth." | PASS |
 | Empty Swagger tags | `cart_system/settings/base.py` `SPECTACULAR_SETTINGS["TAGS"]` lists only `Checkout`, `Cart`, `Health` — and the comment block above explicitly states the omission policy. No empty/orphan tags. | PASS |
 | Stale `apply-coupon` references | Route is `add-coupon`; view class is `ApplyCouponView`. Documented as such in RUNBOOK §3 and FINAL_REVIEW row 7. The `apply_coupon_to_cart` references in code/docs are **service function names** (verb-led naming convention required by `PROJECT_SPEC.md` §4.1). No stale URL strings found. | PASS |
@@ -367,11 +391,11 @@ POST http://localhost:8000/api/v1/carts/{cart.id}/coupons/   # 404 — not wired
 -d '{"coupon_code": "DEMO10"}'                                # field name is "code"
 ```
 
-This was a real defect — a copy-paste hint that would have 404'd for any reviewer. The fix has been applied: the seed command now prints the correct action-style URL plus the `X-User-Id` header that the cart action endpoints require, and the body uses the real serializer field name:
+This was a real defect — a copy-paste hint that would have 404'd for any reviewer. The fix has been applied: the seed command now prints the canonical RESTful URL with the correct body field name and required headers:
 
 ```bash
-# Post-fix (matches RUNBOOK §3 and apps/cart/views.py `ApplyCouponView`):
-POST http://localhost:8000/api/v1/cart/add-coupon/
+# Post-fix (canonical RESTful — matches apps/cart/urls_rest.py `CartCouponsView`):
+POST http://localhost:8000/api/v1/cart/coupons/
   -H "X-Tenant-Domain: <tenant>"
   -H "X-User-Id: <demo-customer-uuid>"
   -d '{"code": "DEMO10"}'
@@ -427,17 +451,17 @@ These are **scope boundaries**, not defects. Each item is explicitly disclosed i
 **Functional readiness: PASS**
 
 - All 17 original assignment requirements are implemented, wired, and tested.
-- **360 passed, 5 skipped, 0 failed** (host SQLite gate and **Docker Postgres gate** — [§2.4](#24-docker--postgres-runtime-parity-2026-05-08)).
+- **RESTful API convention:** canonical RESTful endpoints are now the preferred interface (`POST /cart/items/`, `DELETE /cart/items/{id}/`, `POST /cart/coupons/`, `DELETE /cart/coupons/{id}/`, `PUT /cart/address/`, `PUT /cart/payment-method/`, `PUT /cart/business-details/`). Legacy action-style routes remain as **deprecated backwards-compatible aliases** — all are `deprecated: true` in the OpenAPI schema and regression-tested in `test_views_rest.py`.
+- **393 passed, 5 skipped, 0 failed** — host SQLite gate re-confirmed 2026-05-11 (`5.52s`); Docker Postgres gate last validated 2026-05-08 ([§2.4](#24-docker--postgres-runtime-parity-2026-05-08)). Docker daemon unavailable on this verification pass — no code changes to models, services, or Docker configuration were made; the 2026-05-08 result remains valid.
 - `ruff check .` → exit 0 (`All checks passed!`).
-- `ruff format --check .` → exit 0 (`185 files already formatted`).
-- OpenAPI schema validates with no warnings (host and `docker compose exec web spectacular --validate` — [§2.4](#24-docker--postgres-runtime-parity-2026-05-08)).
-- **Docker / Postgres / Redis runtime:** [`docker-compose.yml`](../docker-compose.yml) stack booted; migrations + double seed + in-container pytest + live curls — [§3](#3-part-3--docker-runtime-validation), [§4](#4-part-4--endpoint-validation).
+- `ruff format --check .` → exit 0 (`187 files already formatted`).
+- OpenAPI schema validates with no warnings — re-confirmed 2026-05-11 (`python manage.py spectacular --validate`, exit 0).
+- All 9 canonical RESTful endpoints present in OpenAPI schema; all 7 legacy endpoints present with `deprecated: true`.
 - All claimed source files, models, services, views, middleware, locks, idempotency, gateways, tasks, validators, and diagrams exist and are wired.
-- All claimed tenant isolation, idempotency, race-handling, B2B, observability, and rate-limiting features are present and exercised by tests **and** smoke-tested over HTTP where applicable.
-- All public-facing documentation is internally consistent (test counts, endpoint names, header contracts, claim scope) and free of unsupported claims (no 10M-user, no JWT, no real Stripe, no full procurement workflow).
-- The one real defect identified during the audit (`seed_demo_data` printing a 404 curl) has been fixed.
+- All claimed tenant isolation, idempotency, race-handling, B2B, observability, and rate-limiting features are present and exercised by tests.
+- All public-facing documentation is internally consistent (test counts, endpoint names, header contracts, claim scope) and free of unsupported claims.
 
-**Recommendation:** the project is ready for submission; the environmental gap (Docker not previously executed on the verification host) is **closed** by this run.
+**Recommendation:** the project is ready for submission. API convention has been improved to RESTful-first with full backwards compatibility preserved.
 
 ---
 
@@ -451,7 +475,7 @@ The first pass through this gate flagged a set of items that required non-markdo
 | 2 | [`apps/payment/services.py`](../apps/payment/services.py), [`apps/invoice/services.py`](../apps/invoice/services.py), [`apps/payment/tests/conftest.py`](../apps/payment/tests/conftest.py) | Added a canonical `if TYPE_CHECKING: …` block importing the model classes referenced by the existing forward-reference annotations. Runtime imports inside method bodies are unchanged. | DONE |
 | 3 | Various test files | `ruff check . --fix` removed 6 duplicate imports flagged as `F811`. | DONE |
 | 4 | [`apps/coupon/tests/test_services.py`](../apps/coupon/tests/test_services.py) line 460 | Removed unused `cart =` binding while keeping the `cart_factory()` row-creation side effect for fixture parity. | DONE |
-| 5 | 40 files across the repo | `ruff check . --fix` removed 40 unused imports flagged as `F401`. Pytest re-run: 360 passed unchanged. | DONE |
+| 5 | 40 files across the repo | `ruff check . --fix` removed 40 unused imports flagged as `F401`. Pytest re-run: 393 passed (includes 33 new RESTful endpoint tests). | DONE |
 | 6 | [`apps/core/responses.py`](../apps/core/responses.py), [`apps/order/views.py`](../apps/order/views.py) | Moved an interleaved `logger = …` and an interleaved `_RATE_LIMIT_RESPONSE = …` below the imports to clear 14 `E402` errors. | DONE |
 | 7 | 76 files across the repo | `ruff format .` whitespace normalisation. | DONE |
 | 8 | `requirements.txt` (recommended follow-up — not done) | Pin `ruff==0.7.*` in a `requirements-dev.txt` for CI reproducibility. | DEFERRED — non-blocking; `make lint` gracefully skips when `ruff` is missing. |

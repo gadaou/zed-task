@@ -1,6 +1,6 @@
 # Test & Quality Summary
 
-`cart_system` ships **347 test functions** (365 pytest nodes) across 26 files and 8 apps. This document summarizes test depth, shows how to run the suite, and explains why concurrency and idempotency coverage is critical for correctness.
+`cart_system` ships **380 test functions** (398 pytest nodes) across 27 files and 8 apps. This document summarizes test depth, shows how to run the suite, and explains why concurrency and idempotency coverage is critical for correctness.
 
 ---
 
@@ -9,13 +9,13 @@
 ```
 DJANGO_SETTINGS_MODULE=cart_system.settings.test pytest -q
 
-365 collected
-360 passed, 5 skipped, 0 failed
+398 collected
+393 passed, 5 skipped, 0 failed
 ```
 
 The 5 skipped tests are intentional — see [Skipped Tests](#skipped-tests) below.
 
-> **Collected vs. defined:** 365 pytest nodes > 347 `def test_*` functions because `pytest.mark.parametrize` expands parametrized tests into multiple nodes. The pie charts below use the 347-function count.
+> **Collected vs. defined:** 398 pytest nodes > 380 `def test_*` functions because `pytest.mark.parametrize` expands parametrized tests into multiple nodes. The pie charts below use the 380-function count.
 
 > **Configuration:** SQLite in-memory database, `fakeredis` (monkeypatched per test), `CELERY_TASK_ALWAYS_EAGER=True` (tasks run synchronously). Tests that touch `SELECT FOR UPDATE` or `transaction.on_commit` use `@pytest.mark.django_db(transaction=True)`.
 
@@ -76,8 +76,8 @@ pytest -x -v
 Counts are exact — each is the number of `def test_*` functions in that app's test files.
 
 ```mermaid
-pie title Tests by App / Module (347 total)
-    "cart (82)" : 82
+pie title Tests by App / Module (380 total)
+    "cart (115)" : 115
     "payment (71)" : 71
     "coupon (62)" : 62
     "core (47)" : 47
@@ -94,9 +94,9 @@ pie title Tests by App / Module (347 total)
 > **Reviewer Summary — manually classified.** Each file is assigned to exactly one category based on what it primarily exercises. The 12 concurrency/race-condition tests are individual functions extracted by name (containing `lock`, `race`, `concurrent`, `stale_version`, or `drift`) from four mixed-purpose files; the remainder of those files fall into their primary category. All counts are reproducible from the [full file breakdown](#full-file-breakdown) below.
 
 ```mermaid
-pie title Tests by Category (347 total)
+pie title Tests by Category (380 total)
     "Unit — service / model / validator / registry (195)" : 195
-    "API — view layer / HTTP endpoints (66)" : 66
+    "API — view layer / HTTP endpoints (99)" : 99
     "Integration — tasks / cache+DB / seed data (51)" : 51
     "Infrastructure / health (23)" : 23
     "Concurrency / race condition (12)" : 12
@@ -109,8 +109,8 @@ pie title Tests by Category (347 total)
 > **Reviewer Summary — file-level assignment.** Each test file is assigned to the feature it primarily exercises. Files that span multiple features (e.g. `cart/test_views.py` covers cart operations, checkout, coupon actions, and address selection) are assigned to the feature that owns the largest share of their tests. The `core/test_seed_demo_data.py` file (28 tests) is assigned to **cart** because cart creation is the primary seeded artifact under test. Counts are reproducible from the [full file breakdown](#full-file-breakdown) below.
 
 ```mermaid
-pie title Feature Coverage (347 total)
-    "Cart (91)" : 91
+pie title Feature Coverage (380 total)
+    "Cart (124)" : 124
     "Payment (71)" : 71
     "Coupon (62)" : 62
     "Tenant isolation (34)" : 34
@@ -193,6 +193,7 @@ Invoice generation carries the same guarantee: `test_invoice_idempotent_double_c
 | `apps/cart/tests/test_services.py` | 16 | Unit (13) + Concurrency (3) | Cart |
 | `apps/cart/tests/test_throttling.py` | 4 | API | Rate limiting |
 | `apps/cart/tests/test_views.py` | 41 | API | Cart |
+| `apps/cart/tests/test_views_rest.py` | 33 | API | Cart |
 | `apps/core/tests/test_health_endpoints.py` | 5 | Infrastructure / health | Observability |
 | `apps/core/tests/test_request_id_middleware.py` | 6 | Infrastructure / health | Observability |
 | `apps/core/tests/test_responses.py` | 8 | Unit | Observability |
@@ -213,24 +214,24 @@ Invoice generation carries the same guarantee: `test_invoice_idempotent_double_c
 | `apps/tenant/tests/test_managers.py` | 12 | Infrastructure / health | Tenant isolation |
 | `apps/tenant/tests/test_middleware.py` | 12 | Infrastructure / health | Tenant isolation |
 | `apps/tenant/tests/test_models.py` | 10 | Unit | Tenant isolation |
-| **Total** | **347** | | |
+| **Total** | **380** | | |
 
 **Category totals (verified against file table):**
 
 | Category | Files contributing | Sum |
 |----------|-------------------|----:|
 | Unit | `addresses/test_services` (6) + `cart/test_services` (13) + `core/test_responses` (8) + `coupon/test_services` (29) + `coupon/test_validator` (31) + `invoice/test_services` (12) + `order/test_services` (9) + `payment/test_add_payment_method` (4) + `payment/test_charge` (22) + `payment/test_gateways` (13) + `payment/test_registry` (9) + `payment/test_services` (17) + `tenant/test_models` (10) | **195** |
-| API | `cart/test_b2b` (9) + `cart/test_throttling` (4) + `cart/test_views` (41) + `order/test_checkout_logging` (3) + `order/test_views` (9) | **66** |
+| API | `cart/test_b2b` (9) + `cart/test_throttling` (4) + `cart/test_views` (41) + `cart/test_views_rest` (33) + `order/test_checkout_logging` (3) + `order/test_views` (9) | **99** |
 | Integration | `cart/test_cache` (12) + `core/test_seed_demo_data` (28) + `invoice/test_tasks` (5) + `payment/test_process_payment` (6) | **51** |
 | Infrastructure / health | `core/test_health_endpoints` (5) + `core/test_request_id_middleware` (6) + `tenant/test_managers` (12) | **23** |
 | Concurrency / race condition | 3 named tests in `cart/test_services` + 2 in `coupon/test_services` + 7 in `order/test_services` | **12** |
-| **Total** | | **347** |
+| **Total** | | **380** |
 
 **Feature totals (verified against file table):**
 
 | Feature | Files contributing | Sum |
 |---------|-------------------|----:|
-| Cart | `addresses/test_services` (6) + `cart/test_services` (16) + `cart/test_views` (41) + `core/test_seed_demo_data` (28) | **91** |
+| Cart | `addresses/test_services` (6) + `cart/test_services` (16) + `cart/test_views` (41) + `cart/test_views_rest` (33) + `core/test_seed_demo_data` (28) | **124** |
 | Payment | `payment/test_add_payment_method` (4) + `payment/test_charge` (22) + `payment/test_gateways` (13) + `payment/test_process_payment` (6) + `payment/test_registry` (9) + `payment/test_services` (17) | **71** |
 | Coupon | `coupon/test_services` (31) + `coupon/test_validator` (31) | **62** |
 | Tenant isolation | `tenant/test_managers` (12) + `tenant/test_middleware` (12) + `tenant/test_models` (10) | **34** |
@@ -240,4 +241,4 @@ Invoice generation carries the same guarantee: `test_invoice_idempotent_double_c
 | Caching | `cart/test_cache` (12) | **12** |
 | B2B | `cart/test_b2b` (9) | **9** |
 | Rate limiting | `cart/test_throttling` (4) | **4** |
-| **Total** | | **347** |
+| **Total** | | **380** |

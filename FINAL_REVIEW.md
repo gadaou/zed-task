@@ -22,7 +22,7 @@
 | **Cart: checkout** | `POST /api/v1/cart/checkout/` (active-cart) and `POST /api/v1/carts/{cart_id}/checkout/` (explicit) — full 12-step protocol: idempotency check → Redis lock → `transaction.atomic` → coupon revalidation → conditional stock deduction → order + payment creation → `IdempotencyRecord` write → commit → lock release → `on_commit` Celery dispatch | `apps/cart/views.py` (`CartCheckoutView`), `apps/order/views.py` (`CheckoutView`), `apps/order/services.py` (`CheckoutService`) | `apps/order/tests/test_services.py`, `test_views.py`, `apps/cart/tests/test_views.py` | ✓ Complete |
 | **Race condition handling** | Three layers: Redis `SET NX PX` distributed lock (fenced Lua release) wraps the entire critical section; PostgreSQL `SELECT FOR UPDATE` on cart, coupon, and payment rows inside the transaction; conditional stock UPDATE (`WHERE stock >= qty`); optimistic `Cart.version` guard | `apps/core/locks.py` (Redis lock), `apps/order/services.py`, `apps/cart/services.py`, `apps/coupon/services.py` | `apps/order/tests/test_services.py` (lock, stale-version, OOS races), `apps/coupon/tests/test_services.py` (concurrent usage-limit race) | ✓ Complete |
 | **Documentation** | README, RUNBOOK, TESTING, FINAL_REVIEW, PROJECT_SPEC, `docs/architecture.md`, `docs/observability.md`, `docs/payment-gateways.md`, `docs/test-quality-summary.md`, 8 Mermaid diagrams under `docs/diagrams/` | All listed files | n/a | ✓ Complete |
-| **Tests** | 384 test functions (27 test files, 7 new RESTful endpoint tests + 7 legacy regression guards added in `test_views_rest.py`); all tests pass | All `apps/*/tests/` directories | See §3 Test Summary below | ✓ Complete |
+| **Tests** | 380 test functions across 27 test files (33 tests in `test_views_rest.py` covering canonical RESTful endpoints and legacy regression guards); **393 passed, 5 skipped, 0 failed** | All `apps/*/tests/` directories | See §3 Test Summary below | ✓ Complete |
 
 ### Bonus features
 
@@ -30,7 +30,7 @@
 |---|---|---|---|---|
 | **Invoice handling** | Celery `generate_invoice` task (queue `invoices`) with two-phase generation: `InvoiceSequence` counter + `Invoice` row committed atomically; PDF rendered outside the transaction; idempotent via `OneToOneField(order)` + status-guarded `pdf_url` UPDATE; ReportLab PDF | `apps/invoice/services.py`, `apps/invoice/tasks.py`, `apps/invoice/pdf.py`, `apps/invoice/models.py` | `apps/invoice/tests/test_services.py` (12 tests), `test_tasks.py` (5 tests) | ✓ Complete |
 | **Coupon constraints** | Rule-registry pattern: constraints stored as JSON on `Coupon.constraints`; `CouponValidator` dispatches each key to a registered handler; built-in rules: `min_total`, `allowed_countries`, `usage_limit`; validity window and `is_active` are always-on checks; unknown keys fail closed | `apps/coupon/validators.py`, `apps/coupon/models.py` (`constraints` JSONField) | `apps/coupon/tests/test_validator.py` (31 tests), `test_services.py` | ✓ Complete |
-| **B2B orders** | Lightweight metadata: `company_name`, `tax_number`, `purchase_order_reference` fields on `Cart` (set via `POST /api/v1/cart/set-business-details/`) and snapshotted onto `Order` at checkout; printed on PDF invoice. Full procurement features (approval workflows, net-N terms, multi-line splits) are intentionally out of scope for this iteration — see Known Constraints. | `apps/cart/models.py` (B2B fields), `apps/order/models.py` (snapshot), `apps/cart/views.py` (`SetBusinessDetailsView`), `apps/cart/services.py` (`set_business_details`), `apps/order/services.py` (checkout snapshot) | `apps/cart/tests/test_b2b.py` (9 tests) | ✓ Complete |
+| **B2B orders** | Lightweight metadata: `company_name`, `tax_number`, `purchase_order_reference` fields on `Cart` (set via `PUT /api/v1/cart/business-details/`; legacy alias `POST /api/v1/cart/set-business-details/` preserved as deprecated) and snapshotted onto `Order` at checkout; printed on PDF invoice. Full procurement features (approval workflows, net-N terms, multi-line splits) are intentionally out of scope for this iteration — see Known Constraints. | `apps/cart/models.py` (B2B fields), `apps/order/models.py` (snapshot), `apps/cart/views.py` (`CartBusinessDetailsView`, `SetBusinessDetailsView`), `apps/cart/services.py` (`set_business_details`), `apps/order/services.py` (checkout snapshot) | `apps/cart/tests/test_b2b.py` (9 tests) | ✓ Complete |
 
 ---
 
@@ -60,9 +60,9 @@
 
 ## 4. Test Summary
 
-**27 test files across 8 apps — `360+ passed, 5 skipped, 0 failed`**
+**27 test files across 8 apps — `393 passed, 5 skipped, 0 failed`**
 
-(A new `test_views_rest.py` adds 35 tests covering the canonical RESTful endpoints and legacy regression guards. Original count: 360 passed, 5 skipped.)
+(`test_views_rest.py` adds 33 tests covering canonical RESTful endpoints and legacy regression guards.)
 
 | App | Test files | Key coverage |
 |-----|-----------|--------------|
@@ -86,7 +86,7 @@
 | Catalog microservice | `Product` is a local model; real catalog integration would use a remote call. |
 | Row-level security (RLS) | Tenant isolation is enforced at the application layer via `TenantAwareManager`; Postgres RLS is the roadmap item (`PROJECT_SPEC.md` §9.7). |
 | Real payment gateways | Stripe / HyperPay / Tabby are referenced only as integration examples; only deterministic dummy gateways are registered. |
-| Address book CRUD | Addresses are created inline by `POST /cart/add-address/`; a standalone address management API is out of scope. |
+| Address book CRUD | Addresses are created inline via `PUT /api/v1/cart/address/`; a standalone address management API is out of scope. |
 | Order listing / status polling | `GET /api/v1/orders/{id}/` is not wired in this iteration. |
 | Public invoice retrieval | Invoices are generated asynchronously and accessible via Django admin and `MEDIA_ROOT`; a public `GET /invoices/{id}/` REST endpoint is planned for a future iteration. |
 
@@ -132,14 +132,14 @@ H='-H "X-Tenant-Domain: demo.localhost" -H "X-User-Id: 00000000-0000-0000-0000-0
 # Get active cart
 curl -s $BASE/ $H | python -m json.tool
 
-# Set B2B details
-curl -s -X POST $BASE/set-business-details/ $H \
+# Set B2B details (canonical RESTful)
+curl -s -X PUT $BASE/business-details/ $H \
   -H "Content-Type: application/json" \
   -d '{"company_name": "Acme Corp", "purchase_order_reference": "PO-001"}' \
   | python -m json.tool
 
-# Add a product (product UUID from seed_demo_data output)
-curl -s -X POST $BASE/add-product/ $H \
+# Add a product (canonical RESTful; product UUID from seed_demo_data output)
+curl -s -X POST $BASE/items/ $H \
   -H "Content-Type: application/json" \
   -d '{"product_id": "<uuid>", "quantity": 2}' \
   | python -m json.tool

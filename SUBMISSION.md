@@ -73,7 +73,7 @@ For narrative architecture explanation, see [docs/architecture.md](docs/architec
 Final verification report: [docs/final-verification.md](docs/final-verification.md)
 
 Key outcomes from the report:
-- `360 passed, 5 skipped, 0 failed`
+- `393 passed, 5 skipped, 0 failed`
 - Docker/PostgreSQL/Redis runtime gate passed
 - OpenAPI validation passed
 - live endpoint smoke tests passed
