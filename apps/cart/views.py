@@ -245,7 +245,8 @@ class AddProductView(APIView):
 
     @extend_schema(
         operation_id="cart_add_product",
-        summary="Add a product to the active cart",
+        summary="[Legacy] Add a product to the active cart",
+        deprecated=True,
         description=(
             "Adds `quantity` units of `product_id` to the caller's active cart, "
             "creating the cart if it does not yet exist.\n\n"
@@ -324,7 +325,8 @@ class RemoveProductView(APIView):
 
     @extend_schema(
         operation_id="cart_remove_product",
-        summary="Remove a product from the active cart",
+        summary="[Legacy] Remove a product from the active cart",
+        deprecated=True,
         description=(
             "Removes the line for `product_id` from the caller's active cart.\n\n"
             "**Idempotent** — if the product is not in the cart the call "
@@ -374,7 +376,8 @@ class ApplyCouponView(APIView):
 
     @extend_schema(
         operation_id="cart_apply_coupon",
-        summary="Apply a coupon to the active cart",
+        summary="[Legacy] Apply a coupon to the active cart",
+        deprecated=True,
         description=(
             "Validates and applies a coupon code to the caller's active cart. "
             "The discount is computed immediately and stored as a snapshot on "
@@ -426,7 +429,8 @@ class RemoveCouponView(APIView):
 
     @extend_schema(
         operation_id="cart_remove_coupon",
-        summary="Remove a coupon from the active cart",
+        summary="[Legacy] Remove a coupon from the active cart",
+        deprecated=True,
         description=(
             "Removes the applied coupon identified by `coupon_id` from the "
             "caller's active cart and recalculates the totals.\n\n"
@@ -486,7 +490,8 @@ class AddAddressView(APIView):
 
     @extend_schema(
         operation_id="cart_add_address",
-        summary="Add a shipping address and select it on the active cart",
+        summary="[Legacy] Add a shipping address and select it on the active cart",
+        deprecated=True,
         description=(
             "Creates a new `Address` record for the customer and immediately "
             "sets it as the `selected_address` on their active cart.\n\n"
@@ -548,7 +553,8 @@ class AddPaymentMethodView(APIView):
 
     @extend_schema(
         operation_id="cart_add_payment_method",
-        summary="Add a payment method and select it on the active cart",
+        summary="[Legacy] Add a payment method and select it on the active cart",
+        deprecated=True,
         description=(
             "Creates a new `PaymentMethod` record linked to the given gateway "
             "and immediately sets it as the `selected_payment_method` on the "
@@ -610,7 +616,8 @@ class SetBusinessDetailsView(APIView):
 
     @extend_schema(
         operation_id="cart_set_business_details",
-        summary="Set B2B business details on the active cart",
+        summary="[Legacy] Set B2B business details on the active cart",
+        deprecated=True,
         description=(
             "Stores company name, tax/VAT number, and/or purchase-order "
             "reference on the caller's active cart.\n\n"
@@ -893,3 +900,417 @@ class CartCheckoutView(APIView):
             }
         )
         return Response(out.data, status=result.http_status)
+
+
+# ---------------------------------------------------------------------------
+# Canonical RESTful views (PROJECT_SPEC §5.4 — preferred API surface)
+#
+# These views implement the same business logic as the legacy action-style
+# views above, but expose resource-oriented URLs:
+#
+#   POST   /api/v1/cart/items/
+#   DELETE /api/v1/cart/items/{product_id}/
+#   POST   /api/v1/cart/coupons/
+#   DELETE /api/v1/cart/coupons/{coupon_id}/
+#   PUT    /api/v1/cart/address/
+#   PUT    /api/v1/cart/payment-method/
+#   PUT    /api/v1/cart/business-details/
+#
+# Each view calls the same service functions as its legacy counterpart so
+# there is zero duplication of business logic.
+# ---------------------------------------------------------------------------
+
+
+class CartItemsView(APIView):
+    """``POST /api/v1/cart/items/``
+
+    Add (or top-up) a product line on the caller's active cart.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/add-product/``.
+    Request body: ``{"product_id": "<uuid>", "quantity": <int>}``
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [TenantUserScopedThrottle]
+    throttle_scope = "add_product"
+
+    @extend_schema(
+        operation_id="cart_items_add",
+        summary="Add a product to the active cart",
+        description=(
+            "Adds `quantity` units of `product_id` to the caller's active cart, "
+            "creating the cart if it does not yet exist.\n\n"
+            "If the product is already in the cart the existing quantity is "
+            "**incremented** — no duplicate line is created.\n\n"
+            "Rate limit: **60 requests / minute** per tenant + user."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        request=AddProductSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after product was added.",
+            ),
+            **_CART_COMMON_ERRORS,
+            404: problem_response(
+                404,
+                "product/not-found",
+                "Product not found",
+                "product cccccccc-… not found in this tenant's catalog",
+                description=(
+                    "Returned when `product_id` does not exist within the current tenant."
+                ),
+            ),
+            429: _RATE_LIMIT_RESPONSE,
+        },
+        examples=add_product_examples(),
+    )
+    def post(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = AddProductSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        data = serializer.validated_data
+        product_id: UUID = data["product_id"]
+        quantity: int = data["quantity"]
+
+        try:
+            product = Product.objects.get(pk=product_id)
+        except Product.DoesNotExist:
+            return problem(
+                "product/not-found",
+                "Product not found",
+                404,
+                f"product {product_id} not found in this tenant's catalog",
+            )
+
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = add_product_to_cart(cart, product, quantity)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartItemDetailView(APIView):
+    """``DELETE /api/v1/cart/items/{product_id}/``
+
+    Remove the line for a product from the caller's active cart.  Idempotent.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/remove-product/``.
+    The ``product_id`` is taken from the URL path, not the request body.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_items_remove",
+        summary="Remove a product from the active cart",
+        description=(
+            "Removes the line for `product_id` from the caller's active cart.\n\n"
+            "**Idempotent** — if the product is not in the cart the call "
+            "succeeds silently and returns the unchanged cart."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after product was removed.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+        examples=remove_product_examples(),
+    )
+    def delete(self, request: Request, product_id: UUID) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = remove_product_from_cart(cart, product_id)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartCouponsView(APIView):
+    """``POST /api/v1/cart/coupons/``
+
+    Apply a coupon code to the caller's active cart.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/add-coupon/``.
+    Request body: ``{"code": "<coupon-code>"}``
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_coupons_apply",
+        summary="Apply a coupon to the active cart",
+        description=(
+            "Validates and applies a coupon code to the caller's active cart. "
+            "The discount is computed immediately and stored as a snapshot on "
+            "`CartCoupon.discount_amount`.\n\n"
+            "Returns `422` when the coupon is expired, usage-limit-reached, or "
+            "already applied to this cart."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        request=ApplyCouponSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with coupon applied.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+        examples=apply_coupon_examples(),
+    )
+    def post(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = ApplyCouponSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        code: str = serializer.validated_data["code"]
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = _COUPON_SERVICE.apply_coupon_to_cart(cart, code)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartCouponDetailView(APIView):
+    """``DELETE /api/v1/cart/coupons/{coupon_id}/``
+
+    Remove a coupon from the caller's active cart by coupon UUID.  Idempotent.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/remove-coupon/``.
+    The ``coupon_id`` is taken from the URL path, not the request body.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_coupons_remove",
+        summary="Remove a coupon from the active cart",
+        description=(
+            "Removes the applied coupon identified by `coupon_id` from the "
+            "caller's active cart and recalculates the totals.\n\n"
+            "**Idempotent** — removing a coupon that is not applied is a no-op."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart after coupon was removed.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+        examples=remove_coupon_examples(),
+    )
+    def delete(self, request: Request, coupon_id: UUID) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = _COUPON_SERVICE.remove_coupon_from_cart(cart, coupon_id)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartAddressView(APIView):
+    """``PUT /api/v1/cart/address/``
+
+    Create a new shipping address for the caller and set it as the cart's
+    selected address.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/add-address/``.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_address_set",
+        summary="Set a shipping address on the active cart",
+        description=(
+            "Creates a new `Address` record for the customer and immediately "
+            "sets it as the `selected_address` on their active cart.\n\n"
+            "This address is required before calling `POST /cart/checkout/`."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        request=AddAddressSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with the new address selected.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+        examples=add_address_examples(),
+    )
+    def put(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = AddAddressSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        data = serializer.validated_data
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            address = add_address(
+                user_id=user_id,
+                country=data["country"],
+                city=data["city"],
+                details=data["details"],
+                label=data.get("label", ""),
+                is_default=data.get("is_default", False),
+            )
+            cart = set_cart_address(cart, address)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartPaymentMethodView(APIView):
+    """``PUT /api/v1/cart/payment-method/``
+
+    Create a new payment method and set it as the cart's selected payment
+    method.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/add-payment-method/``.
+    Request body: ``{"gateway_slug": "dummy_success"}``
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_payment_method_set",
+        summary="Set a payment method on the active cart",
+        description=(
+            "Creates a new `PaymentMethod` record linked to the given gateway "
+            "and immediately sets it as the `selected_payment_method` on the "
+            "caller's active cart.\n\n"
+            "This payment method is required before calling `POST /cart/checkout/`. "
+            "Returns `422` if `gateway_slug` is not a registered gateway."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        request=AddPaymentMethodSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with the new payment method selected.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+        examples=add_payment_method_examples(),
+    )
+    def put(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = AddPaymentMethodSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        gateway_slug: str = serializer.validated_data["gateway_slug"]
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            payment_method = add_payment_method(gateway_slug=gateway_slug)
+            cart = set_cart_payment_method(cart, payment_method)
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)
+
+
+class CartBusinessDetailsView(APIView):
+    """``PUT /api/v1/cart/business-details/``
+
+    Set B2B buyer-metadata on the caller's active cart.
+
+    Canonical RESTful alias for ``POST /api/v1/cart/set-business-details/``.
+    All fields are optional; at least one must be non-empty.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        operation_id="cart_business_details_set",
+        summary="Set B2B business details on the active cart",
+        description=(
+            "Stores company name, tax/VAT number, and/or purchase-order "
+            "reference on the caller's active cart.\n\n"
+            "All three fields are optional individually, but at least one "
+            "must be non-empty. They are visible in `GET /api/v1/cart/` "
+            "immediately and are snapshotted onto the Order at checkout time.\n\n"
+            "Calling this endpoint is idempotent — repeated calls overwrite "
+            "the previous values."
+        ),
+        tags=["Cart"],
+        parameters=[TENANT_DOMAIN_HEADER, USER_ID_HEADER, X_REQUEST_ID_HEADER],
+        request=SetBusinessDetailsSerializer,
+        examples=b2b_request_examples(),
+        responses={
+            200: OpenApiResponse(
+                response=CartReadSerializer,
+                description="Updated cart with B2B details applied.",
+            ),
+            **_CART_COMMON_ERRORS,
+        },
+    )
+    def put(self, request: Request) -> Response:
+        user_id, err = _user_id_required(request)
+        if err:
+            return err
+
+        serializer = SetBusinessDetailsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_problem(serializer.errors)
+
+        data = serializer.validated_data
+        cart = get_or_create_active_cart(user_id)
+
+        try:
+            cart = set_business_details(
+                cart,
+                company_name=data.get("company_name", ""),
+                tax_number=data.get("tax_number", ""),
+                purchase_order_reference=data.get("purchase_order_reference", ""),
+            )
+        except Exception as exc:
+            return map_exception(exc)
+
+        return _cart_response(cart)

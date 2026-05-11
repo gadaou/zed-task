@@ -1,6 +1,6 @@
 # Testing Guide
 
-This document describes the test strategy for `cart_system`, explains how to run tests, and explains why the concurrency and idempotency tests are critical to system correctness.
+This document explains the `cart_system` test strategy, how to run the suite, and why concurrency and idempotency coverage is central to correctness.
 
 ---
 
@@ -29,7 +29,7 @@ If your local `.env` points `DATABASE_URL` to PostgreSQL, either start Postgres 
 pytest -q
 ```
 
-Expected result: **360 passed, 5 skipped, 0 failures** (365 nodes collected; delta vs. 347 `def test_*` functions is `pytest.mark.parametrize` expansion). The 5 skips are intentional — the `PaymentGatewayContractTests` mixin calls `pytest.skip()` for conditions that are not applicable to a specific gateway implementation (e.g. "only applicable to failing gateways" is skipped for `DummySuccessGateway`).
+Expected result: **360 passed, 5 skipped, 0 failures** (365 nodes collected; the difference from 347 `def test_*` functions comes from `pytest.mark.parametrize` expansion). The 5 skips are intentional. `PaymentGatewayContractTests` calls `pytest.skip()` when a contract branch does not apply to the concrete gateway implementation (for example, a decline-only assertion on `DummySuccessGateway`).
 
 ### Filter to a specific domain or test name
 
@@ -240,4 +240,4 @@ The system assigns each checkout attempt a client-supplied `Idempotency-Key` UUI
 
 Tests for idempotent replay (same key → same 202), conflict (same key + different body → 409), and in-progress (concurrent NX attempt → 409) prove the guarantee holds across all three paths a duplicate can take. Invoice generation carries the same guarantee: re-delivering the Celery task never creates a second invoice or advances the sequence twice.
 
-These behaviors cannot be verified by inspecting the code alone — they require tests that simulate the race conditions and replay scenarios that occur in production under load.
+These behaviors are difficult to validate by inspection alone; they need tests that recreate race windows and replay scenarios that show up under real load.

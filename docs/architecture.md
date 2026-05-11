@@ -9,10 +9,11 @@
 
 `cart_system` is a multi-tenant shopping cart and checkout service running on a
 **single Django 5.1 process**, a **single PostgreSQL 16 cluster**, and a
-**single Redis 7 cluster**. One deployment hosts thousands of stores ("tenants")
-with zero cross-tenant data leakage. The architecture follows the Zid-style
-operating model: shared infrastructure, tenant-encoded data, no per-tenant
-schema or database provisioning.
+**single Redis 7 cluster**. One deployment hosts many stores ("tenants") while
+keeping tenant boundaries explicit in request handling, query scoping, and schema
+design. The architecture follows the Zid-style operating model: shared
+infrastructure, tenant-encoded data, and no per-tenant schema or database
+provisioning.
 
 **What is implemented today:**
 
@@ -39,7 +40,7 @@ Celery is configured with `CELERY_TASK_ALWAYS_EAGER=True` in test settings so th
 
 ## 2. Architecture Diagrams
 
-Visual walkthroughs of every major subsystem. Each diagram is self-contained with a short guarantee summary beneath it.
+Visual walkthroughs of every major subsystem. Each diagram is self-contained and includes a short guarantee summary.
 
 | Diagram | What it shows |
 |---------|---------------|
@@ -497,7 +498,7 @@ Accepted blast radius: a single Postgres outage is global. Mitigated by HA Postg
 
 The constraint set on a coupon grows unpredictably — regional promotions, B2B-only codes, first-purchase caps, product allowlists. Encoding each rule as a model column or as an `if/elif` chain in `validate()` would require a migration and a service-code change for each new rule.
 
-The registry pattern makes the validator **open for extension, closed for modification**:
+The registry pattern keeps the validator **open for extension, closed for modification**:
 
 - Adding a new rule: one `@CouponValidator.register("key")` decorated function. `validate()` is untouched.
 - Removing a rule: delete the function; any coupon carrying that key in its `constraints` dict will now fail closed (`CouponConstraintFailed("key", "no validator registered")`), surfacing the stale configuration rather than silently widening eligibility.

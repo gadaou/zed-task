@@ -290,7 +290,7 @@ class Command(BaseCommand):
 
             apply_coupon = textwrap.dedent(f"""\
                 # Optional: apply the 10% coupon before checkout
-                curl -s -X POST http://localhost:8000/api/v1/cart/add-coupon/ \\
+                curl -s -X POST http://localhost:8000/api/v1/cart/coupons/ \\
                   -H "Content-Type: application/json" \\
                   -H "X-Tenant-Domain: {tenant.domain}" \\
                   -H "X-User-Id: {DEMO_CUSTOMER_ID}" \\

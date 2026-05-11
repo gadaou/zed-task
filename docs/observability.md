@@ -1,8 +1,8 @@
 # Observability Guide
 
-This document describes the observability foundations built into cart_system — request correlation, structured logging, lifecycle event catalog, and the recommended production metrics to track.
+This document describes the observability foundations in `cart_system`: request correlation, structured logging, lifecycle events, and the production metrics worth tracking.
 
-The design is **vendor-neutral**: no monitoring client is bundled. All observability data surfaces through the standard Python logging pipeline so you can route it to any backend (Datadog, Prometheus, OpenTelemetry, CloudWatch, Loki) as a deployment concern.
+The design is **vendor-neutral**: no monitoring client is bundled. Observability data flows through the Python logging pipeline, so routing to Datadog, Prometheus, OpenTelemetry, CloudWatch, Loki, or another backend is a deployment choice.
 
 ---
 
@@ -107,7 +107,7 @@ log_event(logger, "payment.declined", level=logging.WARNING,
 
 ## 3. Lifecycle Event Catalog
 
-All events use the `action` field for log-query filtering (e.g., `action:"checkout.completed"` in Datadog).
+All events use the `action` field for log-query filtering (for example, `action:"checkout.completed"` in Datadog).
 
 ### Checkout
 

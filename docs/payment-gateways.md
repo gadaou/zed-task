@@ -19,7 +19,7 @@ PROJECT_SPEC §3.3 states:
 >  contract test against the shared `PaymentGatewayContractTests`. No core
 >  changes."
 
-The motivation is threefold:
+The design goals are straightforward:
 
 1. **Open/closed principle.** New gateways extend the system without touching
    the service layer, the checkout flow, or the Celery tasks.  The gateway
@@ -30,7 +30,7 @@ The motivation is threefold:
    gateways — no network calls, no API keys, no sandboxes required.  Contract
    tests verify every implementation against the same expectations.
 
-3. **Operational independence.** Each gateway is independently deployable.
+3. **Operational independence.** Each gateway can fail independently.
    Stripe can be broken without affecting HyperPay.  Circuit-breaker logic
    (PROJECT_SPEC §5.1) is per-gateway.
 
@@ -306,7 +306,7 @@ register_payment_gateway(StripeGateway.slug, StripeGateway)
 
 ### Registry over `if/else`
 
-The alternative — a giant `if payment.provider == "stripe": ... elif ...` in
+The alternative — a large `if payment.provider == "stripe": ... elif ...` block in
 `PaymentService` — requires a core code change for every new gateway, violates
 open/closed, and cannot be tested in isolation.
 

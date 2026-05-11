@@ -5,20 +5,20 @@ For full details and operational depth, see [README.md](README.md), [RUNBOOK.md]
 
 ## 1. Project Overview
 
-`cart_system` is a multi-tenant cart and checkout service designed around correctness under concurrency and clear tenant boundaries.  
-All tenant data lives in a single shared PostgreSQL database, which is the only source of truth.  
-Redis is used for distributed checkout locks, idempotency in-progress sentinels, cart cache coordination, rate limiting counters, and Celery brokering.  
-Celery workers handle asynchronous payment authorization and invoice generation so checkout remains responsive.  
-The API is implemented with Django REST Framework, with OpenAPI generation and interactive Swagger/ReDoc docs.
+`cart_system` is a multi-tenant cart and checkout service focused on correctness under concurrency and explicit tenant boundaries.  
+All tenant data lives in one shared PostgreSQL database, which remains the only source of truth.  
+Redis handles checkout locks, idempotency in-progress sentinels, cart cache coordination, rate-limit counters, and Celery brokering.  
+Celery workers process payment authorization and invoice generation asynchronously to keep checkout latency predictable.  
+The API is built with Django REST Framework and documented through generated OpenAPI plus Swagger/ReDoc endpoints.
 
 ## 2. Core Requirements Covered
 
 - [x] **Single database multi-tenancy** - shared-schema design with tenant-scoped models on one PostgreSQL cluster.
 - [x] **Tenant isolation** - tenant context resolved from `X-Tenant-Domain` and enforced by tenant-aware ORM scoping.
-- [x] **Add/remove product** - `add-product` and `remove-product` cart endpoints implemented and tested.
-- [x] **Add/remove coupon** - apply/remove coupon endpoints with validation, stacking policy, and usage tracking.
-- [x] **Add address** - cart address assignment endpoint implemented and covered by tests.
-- [x] **Add payment method** - payment-method selection endpoint with gateway-slug validation.
+- [x] **Add/remove product** - `POST /cart/items/` and `DELETE /cart/items/{product_id}/` implemented and tested (legacy action-style routes preserved for backwards compatibility).
+- [x] **Add/remove coupon** - `POST /cart/coupons/` and `DELETE /cart/coupons/{coupon_id}/` with validation, stacking policy, and usage tracking.
+- [x] **Add address** - `PUT /cart/address/` cart address assignment endpoint implemented and covered by tests.
+- [x] **Add payment method** - `PUT /cart/payment-method/` selection endpoint with gateway-slug validation.
 - [x] **Checkout** - checkout flow implemented with idempotency, locking, stock deduction, and async payment dispatch.
 - [x] **Race-condition handling** - lock + DB transaction + row-level locking + conditional updates protect critical paths.
 - [x] **Pluggable payment gateways** - `PaymentGateway` abstraction + registry + deterministic dummy gateways.
@@ -32,13 +32,9 @@ The API is implemented with Django REST Framework, with OpenAPI generation and i
 
 ## 4. Strongest Reliability Mechanisms
 
-- Durable idempotency record in PostgreSQL plus Redis in-progress sentinel for safe retry/replay behavior.
-- Redis checkout lock with fenced token-checked release to avoid stale unlock hazards.
-- `transaction.atomic` with `select_for_update` on critical rows in checkout/payment/invoice paths.
-- Conditional stock deduction (`WHERE stock >= quantity`) to prevent overselling.
-- Coupon revalidation at checkout-time before order commit.
-- `transaction.on_commit` for Celery dispatch so rolled-back transactions do not enqueue async work.
-- Two-phase invoice generation (atomic DB phase, PDF phase outside transaction) for recoverable retries.
+Checkout combines durable idempotency records in PostgreSQL with a Redis in-progress sentinel so retries and replays are handled explicitly. It also runs behind a Redis lock with fenced token-checked release, and critical write paths use `transaction.atomic` plus `select_for_update`.
+
+Inventory correctness is enforced with conditional stock deduction (`WHERE stock >= quantity`) and coupon revalidation immediately before commit. Async dispatch always goes through `transaction.on_commit`, so rolled-back transactions never queue payment or invoice work. Invoice generation is split into an atomic DB phase and a PDF phase outside the transaction to make retries recoverable.
 
 ## 5. How to Run Locally
 

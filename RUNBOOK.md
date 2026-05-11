@@ -1,6 +1,6 @@
 # Runbook — cart_system
 
-Operational reference for developers and on-call engineers.
+Operational reference for developers and on-call engineers working this service day to day.
 
 ---
 
@@ -56,7 +56,7 @@ make test     # pytest
 
 ## 2. Required Headers
 
-Every non-exempt endpoint requires all three of these headers:
+Most tenant-scoped endpoints depend on explicit request context. In practice, you should send the headers below on all mutating cart and checkout calls unless the path is listed as exempt.
 
 | Header | Type | Description |
 |--------|------|-------------|
@@ -90,17 +90,25 @@ curl -s http://localhost:8000/api/v1/cart/ \
 ### 3.2 Add a product
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/cart/add-product/ \
+curl -s -X POST http://localhost:8000/api/v1/cart/items/ \
   -H "X-Tenant-Domain: demo.localhost" \
   -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
   -H "Content-Type: application/json" \
   -d '{"product_id": "<product_uuid>", "quantity": 2}'
 ```
 
+### 3.2b Remove a product
+
+```bash
+curl -s -X DELETE "http://localhost:8000/api/v1/cart/items/<product_uuid>/" \
+  -H "X-Tenant-Domain: demo.localhost" \
+  -H "X-User-Id: 00000000-0000-0000-0000-000000000001"
+```
+
 ### 3.3 Set B2B business details
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/cart/set-business-details/ \
+curl -s -X PUT http://localhost:8000/api/v1/cart/business-details/ \
   -H "X-Tenant-Domain: demo.localhost" \
   -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
   -H "Content-Type: application/json" \
@@ -111,20 +119,20 @@ curl -s -X POST http://localhost:8000/api/v1/cart/set-business-details/ \
   }'
 ```
 
-### 3.4 Add a shipping address
+### 3.4 Set a shipping address
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/cart/add-address/ \
+curl -s -X PUT http://localhost:8000/api/v1/cart/address/ \
   -H "X-Tenant-Domain: demo.localhost" \
   -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
   -H "Content-Type: application/json" \
   -d '{"country": "US", "city": "New York", "details": "123 Main St"}'
 ```
 
-### 3.5 Add a payment method
+### 3.5 Set a payment method
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/cart/add-payment-method/ \
+curl -s -X PUT http://localhost:8000/api/v1/cart/payment-method/ \
   -H "X-Tenant-Domain: demo.localhost" \
   -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
   -H "Content-Type: application/json" \
@@ -198,7 +206,7 @@ If `/ready/` returns `"redis": "error"`, Redis is unreachable — check `REDIS_U
 
 ## 5. Celery Worker
 
-The `worker` Docker Compose service starts automatically. To inspect it:
+The `worker` service starts with Docker Compose. Use the commands below when you need to inspect queue health or drain stuck work during debugging:
 
 ```bash
 # View worker logs
@@ -265,7 +273,8 @@ Throttle is applied per `(tenant, user, action)` using Redis INCR + EXPIRE (fixe
 |----------|-------|-------|
 | `POST /api/v1/cart/checkout/` | `checkout` | 10 / minute |
 | `POST /api/v1/carts/{id}/checkout/` | `checkout` | 10 / minute |
-| `POST /api/v1/cart/add-product/` | `add_product` | 60 / minute |
+| `POST /api/v1/cart/items/` | `add_product` | 60 / minute |
+| `POST /api/v1/cart/add-product/` *(legacy)* | `add_product` | 60 / minute |
 
 A throttled request returns:
 
@@ -288,7 +297,7 @@ To adjust limits, edit `DEFAULT_THROTTLE_RATES` in `cart_system/settings/base.py
 |---------|-------------|-----|
 | `400 tenant/missing-header` on every request | `X-Tenant-Domain` header absent | Add the header to all API calls |
 | `404 tenant/not-found` | Domain not registered in DB | Run `seed_demo_data` or create tenant in Django admin |
-| `422 cart/checkout-incomplete` | No address or payment method selected | Call `add-address` and `add-payment-method` before checkout |
+| `422 cart/checkout-incomplete` | No address or payment method selected | Call `PUT /cart/address/` and `PUT /cart/payment-method/` before checkout |
 | `409 cart/locked` | Redis lock held by concurrent checkout | Retry with back-off (~1 s) |
 | `409 idempotency/conflict` | Same `Idempotency-Key` with different body | Use a fresh UUID key |
 | `422 product/out-of-stock` | Stock depleted between add-to-cart and checkout | Remove the item or reduce quantity |

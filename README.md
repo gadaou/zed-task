@@ -1,6 +1,6 @@
 # cart_system
 
-Multi-tenant cart and checkout service. One PostgreSQL database, one Redis cluster, one Celery deployment — many tenants. Built reliability-first: cart reads survive payment pipeline degradation, and checkout correctness is guaranteed under concurrent requests.
+Multi-tenant cart and checkout service. One PostgreSQL database, one Redis cluster, and one Celery deployment serve many tenants. Cart reads stay available when payment or invoice workers degrade, and checkout correctness is enforced under concurrent requests.
 
 The architectural contract lives in [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
 
@@ -81,19 +81,19 @@ The load-bearing choices behind the codebase, surfaced up front so reviewers do 
 
 ## 1. Overview
 
-- **Multi-tenant by construction.** Every model carries `tenant_id`. The ORM manager, middleware, lock-key namespace, and index design all treat tenant scope as a first-class constraint — not an afterthought.
-- **Single PostgreSQL database.** All tenants share one cluster using a shared-schema model. PostgreSQL is the only system of record; Redis is coordination infrastructure, not storage.
-- **Reliability-first design.** Cart reads remain available when payment or invoice pipelines degrade. Checkout uses a layered safety model: distributed locks, database transactions, idempotency records, and conditional stock updates that make concurrent races safe by construction.
+This service is multi-tenant by construction: every model carries `tenant_id`, and tenant scope is enforced consistently in middleware, ORM scoping, lock-key namespaces, and index design.
+
+All tenants share a single PostgreSQL cluster in a shared-schema model. PostgreSQL is the only system of record, while Redis is used for coordination concerns such as locks, cache invalidation, idempotency sentinels, and rate limiting.
+
+Checkout correctness comes from layered controls that work together: distributed locks, `transaction.atomic`, idempotency records, and conditional stock updates. Cart reads can still succeed when async payment or invoice pipelines are degraded.
 
 ---
 
 ## 2. Core Flows (Summary)
 
-- **Active cart resolution** — `get_or_create_active_cart` is race-safe via a partial unique index `WHERE status = 'ACTIVE'`; the database is the arbiter, not the application.
-- **Cart mutations** — `add_product_to_cart` / `remove_product_from_cart` run inside `transaction.atomic()` with `select_for_update()` and increment `Cart.version` for cache invalidation. Coupon rules are evaluated at apply-time and re-validated at checkout-time.
-- **Checkout** — a 17-step protocol: idempotency replay → Redis sentinel → distributed lock → `transaction.atomic` → coupon revalidation → conditional stock deduction → order creation → `IdempotencyRecord` write → `on_commit(enqueue_authorize_payment)` → commit → lock release.
-- **Payment** — the `authorize_payment` Celery task resolves the gateway by slug, applies status-guarded FSM transitions, and dispatches `enqueue_generate_invoice` on success via `on_commit`.
-- **Invoice** — two-phase: Phase 1 commits the `Invoice` row inside `transaction.atomic`; Phase 2 renders the PDF outside the transaction. The `pdf_url = ""` sentinel is the crash-recovery signal.
+`get_or_create_active_cart` is race-safe through a partial unique index `WHERE status = 'ACTIVE'`, so the database remains the final arbiter. Cart mutations (`add_product_to_cart` / `remove_product_from_cart`) execute inside `transaction.atomic()` with `select_for_update()`, bump `Cart.version` for invalidation semantics, and rely on coupon validation at apply-time with revalidation at checkout-time.
+
+Checkout follows a 17-step flow: idempotency replay, Redis sentinel, distributed lock, `transaction.atomic`, coupon revalidation, conditional stock deduction, order creation, `IdempotencyRecord` write, `on_commit(enqueue_authorize_payment)`, commit, and lock release. Payment authorization then runs in Celery by resolving the gateway slug and applying status-guarded FSM updates; successful authorization triggers `enqueue_generate_invoice` via `on_commit`. Invoice generation stays two-phase: persist the `Invoice` row inside `transaction.atomic`, then render the PDF outside the transaction, using `pdf_url = ""` as the retry signal after partial failure.
 
 Full step-by-step flows with sequence diagrams: [`docs/architecture.md`](docs/architecture.md).
 
@@ -164,16 +164,25 @@ The OpenAPI schema is generated dynamically by drf-spectacular at `/api/schema/`
 ### Endpoints
 
 ```
-# Cart (customer-facing — active cart resolved automatically)
-GET  /api/v1/cart/
+# Cart — canonical RESTful endpoints (preferred, PROJECT_SPEC §5.4)
+GET    /api/v1/cart/
+POST   /api/v1/cart/items/
+DELETE /api/v1/cart/items/{product_id}/
+POST   /api/v1/cart/coupons/
+DELETE /api/v1/cart/coupons/{coupon_id}/
+PUT    /api/v1/cart/address/
+PUT    /api/v1/cart/payment-method/
+PUT    /api/v1/cart/business-details/     # B2B: company_name, tax_number, purchase_order_reference
+POST   /api/v1/cart/checkout/
+
+# Cart — legacy action-style endpoints (kept for backwards compatibility)
 POST /api/v1/cart/add-product/
 POST /api/v1/cart/remove-product/
 POST /api/v1/cart/add-coupon/
 POST /api/v1/cart/remove-coupon/
 POST /api/v1/cart/add-address/
 POST /api/v1/cart/add-payment-method/
-POST /api/v1/cart/set-business-details/   # B2B: company_name, tax_number, purchase_order_reference
-POST /api/v1/cart/checkout/
+POST /api/v1/cart/set-business-details/
 
 # Explicit checkout (ops / integration tests)
 POST /api/v1/carts/{cart_id}/checkout/

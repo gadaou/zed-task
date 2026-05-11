@@ -29,7 +29,12 @@ api_v1_patterns = [
     path("tenants/", include(("apps.tenant.urls", "tenant"), namespace="tenants")),
     # Resource-oriented cart routes (e.g. /{cart_id}/checkout/).
     path("carts/", include(("apps.cart.urls", "cart"), namespace="carts")),
-    # Action-style cart routes operating on the caller's single active cart.
+    # Canonical RESTful cart routes (preferred — PROJECT_SPEC §5.4).
+    path(
+        "cart/",
+        include(("apps.cart.urls_rest", "cart_rest"), namespace="cart_rest"),
+    ),
+    # Action-style cart routes (legacy — kept for backwards compatibility).
     path(
         "cart/",
         include(("apps.cart.urls_actions", "cart_actions"), namespace="cart_actions"),

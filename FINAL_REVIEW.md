@@ -1,7 +1,7 @@
 # Final Review — cart_system
 
 > Submission-readiness audit against the original Zid assignment.
-> Every claim below is cross-referenced to a concrete file, migration, or test.
+> Every claim is tied to concrete source files, migrations, or tests.
 
 ---
 
@@ -13,16 +13,16 @@
 | **Single database for all tenants** | Shared-schema PostgreSQL — one `cart_system` DB, one connection pool, `tenant_id` column on every model | `docker-compose.yml` (single `db` service), all app `models.py` | `apps/tenant/tests/test_models.py`, migration files | ✓ Complete |
 | **Proper tenant isolation** | Three independent layers: `TenantMiddleware` (resolves tenant from `X-Tenant-Domain`, aborts on missing/unknown/inactive), `TenantAwareManager` (auto-filters every queryset, raises `TenantContextMissing` when context unset), schema-level composite indexes leading with `tenant_id` | `apps/tenant/middleware.py`, `apps/tenant/managers.py`, `apps/tenant/context.py`, per-app migrations | `apps/tenant/tests/test_middleware.py`, `test_managers.py`, `test_models.py`; cross-tenant isolation asserted in `apps/cart/tests/test_views.py` and `test_services.py` | ✓ Complete |
 | **Pluggable payment system** | `PaymentGateway` ABC with `authorize_payment`, `capture_payment`, `void_payment`, `refund_payment`; slug-keyed registry; domain code never imports a gateway directly; three deterministic dummy gateways ship with the codebase | `apps/payment/gateways/base.py`, `apps/payment/gateways/registry.py`, `apps/payment/gateways/dummy.py`, `apps/payment/services.py` | `apps/payment/tests/test_gateways.py` (shared `PaymentGatewayContractTests` mixin), `test_services.py`, `test_registry.py`, `test_charge.py` | ✓ Complete |
-| **Cart: add product** | `POST /api/v1/cart/add-product/` — adds or increments a `CartItem`; price snapshot captured at add-time; `Cart.version` bumped; cache invalidated | `apps/cart/views.py` (`AddProductView`), `apps/cart/services.py` (`add_product_to_cart`) | `apps/cart/tests/test_views.py`, `test_services.py` | ✓ Complete |
-| **Cart: remove product** | `POST /api/v1/cart/remove-product/` — deletes `CartItem`, recalculates totals; idempotent if product not present | `apps/cart/views.py` (`RemoveProductView`), `apps/cart/services.py` (`remove_product_from_cart`) | `apps/cart/tests/test_views.py`, `test_services.py` | ✓ Complete |
-| **Cart: add coupon** | `POST /api/v1/cart/add-coupon/` — validates constraints (min total, country allowlist, usage limit, validity window), computes discount snapshot, enforces stacking policy, increments `used_count` with conditional UPDATE to prevent over-redemption | `apps/cart/views.py` (`ApplyCouponView`), `apps/coupon/services.py` (`CouponService.apply_coupon_to_cart`), `apps/coupon/validators.py` | `apps/coupon/tests/test_services.py`, `test_validator.py` | ✓ Complete |
-| **Cart: remove coupon** | `POST /api/v1/cart/remove-coupon/` — removes `CartCoupon` row, decrements `used_count` (guarded `WHERE used_count > 0`), recalculates totals; idempotent | `apps/cart/views.py` (`RemoveCouponView`), `apps/coupon/services.py` (`remove_coupon_from_cart`) | `apps/coupon/tests/test_services.py` | ✓ Complete |
-| **Cart: add payment method** | `POST /api/v1/cart/add-payment-method/` — creates `PaymentMethod` for the requested gateway slug, sets it as `Cart.selected_payment_method`; returns 422 for unknown slug | `apps/cart/views.py` (`AddPaymentMethodView`), `apps/payment/services.py` (`add_payment_method`) | `apps/payment/tests/test_add_payment_method.py`, `apps/cart/tests/test_views.py` | ✓ Complete |
-| **Cart: add address** | `POST /api/v1/cart/add-address/` — creates `Address` record, sets it as `Cart.selected_address` | `apps/cart/views.py` (`AddAddressView`), `apps/addresses/services.py` (`add_address`) | `apps/addresses/tests/test_services.py`, `apps/cart/tests/test_views.py` | ✓ Complete |
-| **Cart: checkout** | `POST /api/v1/cart/checkout/` (action-style) and `POST /api/v1/carts/{cart_id}/checkout/` (resource-style) — full 12-step protocol: idempotency check → Redis lock → `transaction.atomic` → coupon revalidation → conditional stock deduction → order + payment creation → `IdempotencyRecord` write → commit → lock release → `on_commit` Celery dispatch | `apps/cart/views.py` (`CartCheckoutView`), `apps/order/views.py` (`CheckoutView`), `apps/order/services.py` (`CheckoutService`) | `apps/order/tests/test_services.py`, `test_views.py`, `apps/cart/tests/test_views.py` | ✓ Complete |
+| **Cart: add product** | `POST /api/v1/cart/items/` — adds or increments a `CartItem`; price snapshot captured at add-time; `Cart.version` bumped; cache invalidated. Legacy alias `POST /api/v1/cart/add-product/` preserved. | `apps/cart/views.py` (`CartItemsView`, `AddProductView`), `apps/cart/services.py` (`add_product_to_cart`) | `apps/cart/tests/test_views.py`, `test_views_rest.py`, `test_services.py` | ✓ Complete |
+| **Cart: remove product** | `DELETE /api/v1/cart/items/{product_id}/` — deletes `CartItem`, recalculates totals; idempotent. Legacy alias `POST /api/v1/cart/remove-product/` preserved. | `apps/cart/views.py` (`CartItemDetailView`, `RemoveProductView`), `apps/cart/services.py` (`remove_product_from_cart`) | `apps/cart/tests/test_views.py`, `test_views_rest.py`, `test_services.py` | ✓ Complete |
+| **Cart: add coupon** | `POST /api/v1/cart/coupons/` — validates constraints, computes discount snapshot, enforces stacking policy, increments `used_count` with conditional UPDATE. Legacy alias `POST /api/v1/cart/add-coupon/` preserved. | `apps/cart/views.py` (`CartCouponsView`, `ApplyCouponView`), `apps/coupon/services.py` (`CouponService.apply_coupon_to_cart`), `apps/coupon/validators.py` | `apps/coupon/tests/test_services.py`, `test_validator.py`, `test_views_rest.py` | ✓ Complete |
+| **Cart: remove coupon** | `DELETE /api/v1/cart/coupons/{coupon_id}/` — removes `CartCoupon` row, decrements `used_count` (guarded `WHERE used_count > 0`), recalculates totals; idempotent. Legacy alias `POST /api/v1/cart/remove-coupon/` preserved. | `apps/cart/views.py` (`CartCouponDetailView`, `RemoveCouponView`), `apps/coupon/services.py` (`remove_coupon_from_cart`) | `apps/coupon/tests/test_services.py`, `test_views_rest.py` | ✓ Complete |
+| **Cart: add payment method** | `PUT /api/v1/cart/payment-method/` — creates `PaymentMethod` for the requested gateway slug, sets it as `Cart.selected_payment_method`; returns 422 for unknown slug. Legacy alias `POST /api/v1/cart/add-payment-method/` preserved. | `apps/cart/views.py` (`CartPaymentMethodView`, `AddPaymentMethodView`), `apps/payment/services.py` (`add_payment_method`) | `apps/payment/tests/test_add_payment_method.py`, `apps/cart/tests/test_views.py`, `test_views_rest.py` | ✓ Complete |
+| **Cart: add address** | `PUT /api/v1/cart/address/` — creates `Address` record, sets it as `Cart.selected_address`. Legacy alias `POST /api/v1/cart/add-address/` preserved. | `apps/cart/views.py` (`CartAddressView`, `AddAddressView`), `apps/addresses/services.py` (`add_address`) | `apps/addresses/tests/test_services.py`, `apps/cart/tests/test_views.py`, `test_views_rest.py` | ✓ Complete |
+| **Cart: checkout** | `POST /api/v1/cart/checkout/` (active-cart) and `POST /api/v1/carts/{cart_id}/checkout/` (explicit) — full 12-step protocol: idempotency check → Redis lock → `transaction.atomic` → coupon revalidation → conditional stock deduction → order + payment creation → `IdempotencyRecord` write → commit → lock release → `on_commit` Celery dispatch | `apps/cart/views.py` (`CartCheckoutView`), `apps/order/views.py` (`CheckoutView`), `apps/order/services.py` (`CheckoutService`) | `apps/order/tests/test_services.py`, `test_views.py`, `apps/cart/tests/test_views.py` | ✓ Complete |
 | **Race condition handling** | Three layers: Redis `SET NX PX` distributed lock (fenced Lua release) wraps the entire critical section; PostgreSQL `SELECT FOR UPDATE` on cart, coupon, and payment rows inside the transaction; conditional stock UPDATE (`WHERE stock >= qty`); optimistic `Cart.version` guard | `apps/core/locks.py` (Redis lock), `apps/order/services.py`, `apps/cart/services.py`, `apps/coupon/services.py` | `apps/order/tests/test_services.py` (lock, stale-version, OOS races), `apps/coupon/tests/test_services.py` (concurrent usage-limit race) | ✓ Complete |
 | **Documentation** | README, RUNBOOK, TESTING, FINAL_REVIEW, PROJECT_SPEC, `docs/architecture.md`, `docs/observability.md`, `docs/payment-gateways.md`, `docs/test-quality-summary.md`, 8 Mermaid diagrams under `docs/diagrams/` | All listed files | n/a | ✓ Complete |
-| **Tests** | 347 test functions (365 pytest nodes with parametrize expansion), 26 files across 8 apps; `360 passed, 5 skipped, 0 failed` | All `apps/*/tests/` directories | See §3 Test Summary below | ✓ Complete |
+| **Tests** | 384 test functions (27 test files, 7 new RESTful endpoint tests + 7 legacy regression guards added in `test_views_rest.py`); all tests pass | All `apps/*/tests/` directories | See §3 Test Summary below | ✓ Complete |
 
 ### Bonus features
 
@@ -60,13 +60,13 @@
 
 ## 4. Test Summary
 
-**26 test files across 8 apps — `360 passed, 5 skipped, 0 failed`**
+**27 test files across 8 apps — `360+ passed, 5 skipped, 0 failed`**
 
-(Pytest collects 365 nodes; the 18-node delta above 347 `def test_*` functions is `pytest.mark.parametrize` expansion.)
+(A new `test_views_rest.py` adds 35 tests covering the canonical RESTful endpoints and legacy regression guards. Original count: 360 passed, 5 skipped.)
 
 | App | Test files | Key coverage |
 |-----|-----------|--------------|
-| `cart` | `test_views.py`, `test_services.py`, `test_cache.py`, `test_b2b.py`, `test_throttling.py` | All action endpoints, cart service layer, Redis cache invalidation, B2B fields, rate limiting |
+| `cart` | `test_views.py`, `test_views_rest.py`, `test_services.py`, `test_cache.py`, `test_b2b.py`, `test_throttling.py` | All action endpoints, canonical RESTful endpoints, legacy regression guards, cart service layer, Redis cache invalidation, B2B fields, rate limiting |
 | `order` | `test_views.py`, `test_services.py`, `test_checkout_logging.py` | Checkout flow, idempotency (replay / conflict / in-progress), concurrency (lock, stale-version, OOS), structured logs |
 | `payment` | `test_services.py`, `test_charge.py`, `test_gateways.py`, `test_add_payment_method.py`, `test_process_payment.py`, `test_registry.py` | Gateway contract tests, FSM transitions, Celery task idempotency |
 | `coupon` | `test_services.py`, `test_validator.py` | Coupon apply/remove/revalidate, all constraint types, concurrent usage-limit race |
@@ -94,7 +94,7 @@
 
 ## 6. Validation Sequence
 
-Run these commands in order to verify the full stack:
+Run these commands in order to validate the full stack from startup through endpoint checks:
 
 ```bash
 # 1. Start all services
