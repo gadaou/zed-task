@@ -3,7 +3,7 @@
 > Single source of truth for `cart_system` submission readiness.
 > Generated from an 8-part verification gate.
 >
-> **Run date:** 2026-05-08
+> **Run date:** 2026-05-11
 > **Run host:** macOS, Docker Compose (`docker compose up --build -d`), PostgreSQL 16 + Redis 7 + Django `web` + Celery `worker` ([`docker-compose.yml`](../docker-compose.yml))
 > **Final status:** **PASS** — full Docker / Postgres / Redis runtime gate executed ([§3](#3-part-3--docker-runtime-validation), [§4](#4-part-4--endpoint-validation)).
 
@@ -96,6 +96,7 @@ Doc evidence: [`docs/architecture.md`](architecture.md), [`docs/diagrams/checkou
 | Durable replay logic | `apps/core/idempotency.py` (DB record load + JSON payload return) | `apps/order/tests/test_services.py:276` `test_idempotent_replay_returns_same_order` | PASS |
 | Same key + same payload replay test | n/a | `apps/order/tests/test_views.py:136` `test_checkout_idempotent_replay`; `apps/cart/tests/test_views.py:602` | PASS |
 | Same key + different payload conflict test | n/a | `apps/order/tests/test_services.py:292` `test_idempotency_conflict_different_payload`; `apps/order/tests/test_views.py:149` `test_checkout_idempotency_conflict` | PASS |
+| In-progress duplicate handling test | n/a | `apps/order/tests/test_services.py:322` `test_idempotency_in_progress_concurrent` | PASS |
 
 ### 1.5 Payment system
 
@@ -239,13 +240,13 @@ The first pass reported the failures below; all are now fixed:
 
 The 76 pytest warnings are all `RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of .condition` — emitted by Django itself for `CheckConstraint(check=...)` declarations in migrations. These are **deprecation warnings for Django 6.0**; the project targets Django 5.1. They will need to be addressed before a Django 6 upgrade but do not affect current behaviour.
 
-### 2.4 Docker / Postgres runtime parity (2026-05-08)
+### 2.4 Docker / Postgres runtime parity (2026-05-11)
 
 The same gate was re-run **inside** the `web` container against the real Compose stack (Postgres on `db`, Redis on `redis`):
 
 | Command | Exit | Result |
 |---|---|---|
-| `docker compose exec web pytest -q` | **0** | **393 passed, 5 skipped, 0 failed** (host re-run: 5.52s; Docker last run: 29.27s; 76 `RemovedInDjango60Warning` same class as host) |
+| `docker compose exec web pytest -q` | **0** | **393 passed, 5 skipped, 0 failed** (host re-run: 9.99s; Docker run: 48.53s; 76 `RemovedInDjango60Warning` same class as host) |
 | `docker compose exec web python manage.py spectacular --validate --file /tmp/openapi.json --format openapi-json` | **0** | **PASS** (no schema errors) |
 
 This matches the host Part 2 counts; the in-container run is the authoritative **Postgres + Redis** path for this report.
@@ -263,7 +264,7 @@ This matches the host Part 2 counts; the in-container run is the authoritative *
 | `docker compose exec web python manage.py migrate` | **0** — `No migrations to apply` (migrations also run on `web` container start). |
 | `seed_demo_data` (1st) | **0** — created tenant `demo.localhost`, 3 products, 2 coupons, address, payment method, demo cart. |
 | `seed_demo_data` (2nd) | **0** — idempotent: all rows **`[exists]`**, no duplicates. |
-| `docker compose exec web pytest -q` | **0** — **393 passed, 5 skipped** (Docker last validated 2026-05-08; host re-confirmed 2026-05-11). |
+| `docker compose exec web pytest -q` | **0** — **393 passed, 5 skipped** (Docker re-validated 2026-05-11, 48.53s). |
 
 **Evidence:** [`docker-compose.yml`](../docker-compose.yml) — Postgres 16 (`db`), Redis 7 (`redis`), `web` (`python manage.py migrate --noinput && runserver 0.0.0.0:8000`), Celery `worker` (queues `payments`, `invoices`, `notifications`). Prerequisite: copy [`.env.example`](../.env.example) → `.env` if missing (`env_file` in Compose).
 
@@ -273,7 +274,7 @@ This matches the host Part 2 counts; the in-container run is the authoritative *
 
 ## 4. Part 4 — Endpoint validation
 
-**Status: PASS** — live HTTP exercised against `http://localhost:8000` with seed IDs from [`seed_demo_data`](../apps/core/management/commands/seed_demo_data.py) (`demo.localhost`, customer `00000000-0000-0000-0000-000000000001`; product UUIDs printed under “Products:”; coupons `DEMO10`, `SAVE5`; cart `3246c224-469f-48f5-8723-5e7bf6a88a25` on this run).
+**Status: PASS** — live HTTP exercised against `http://localhost:8000` with seed IDs from [`seed_demo_data`](../apps/core/management/commands/seed_demo_data.py) (`demo.localhost`, customer `00000000-0000-0000-0000-000000000001`; product UUIDs printed under “Products:”; coupons `DEMO10`, `SAVE5`; cart `7d1d3302-d382-45c5-9931-9c41dd858f4d` on the 2026-05-11 run).
 
 ### 4.1 URL routing (offline)
 
@@ -318,7 +319,7 @@ Endpoint behaviour — including required headers, idempotency replay, and rate 
 
 All of these are part of the **393 passing tests** reported in [§2](#2-part-2--automated-validation).
 
-### 4.3 Live HTTP validation (host → Docker `web`, 2026-05-08)
+### 4.3 Live HTTP validation (host → Docker `web`, 2026-05-11)
 
 | Probe | Expected | Actual |
 |---|---|---|
@@ -328,13 +329,13 @@ All of these are part of the **393 passing tests** reported in [§2](#2-part-2--
 | `curl -I http://localhost:8000/api/schema/` | 200 | **200** |
 | `curl -I http://localhost:8000/api/redoc/` | 200 | **200** |
 
-**Seeded cart flow** (`X-Tenant-Domain`, `X-User-Id` on every call): `GET /api/v1/cart/` → `POST …/items/` (USB-C Hub `2173d8fa-c8ed-4a33-bdab-03765ef5c7c3`) → `DELETE …/items/22c02db4-3413-42f8-a7c4-9f153347e6ee/` (keyboard) → `POST …/coupons/` (`DEMO10`) → `DELETE …/coupons/{coupon_id}/` → `PUT …/address/` → `PUT …/payment-method/` (`dummy_success`) → `PUT …/business-details/` → `POST …/checkout/` with **`Idempotency-Key`** — all returned **200** except checkout **202**. (Original Docker run on 2026-05-08 used the legacy action-style aliases; canonical RESTful paths produce identical responses.)
+**Seeded cart flow** (`X-Tenant-Domain`, `X-User-Id` on every call): `GET /api/v1/cart/` → `POST …/items/` (USB-C Hub `2173d8fa-c8ed-4a33-bdab-03765ef5c7c3`) → `DELETE …/items/22c02db4-3413-42f8-a7c4-9f153347e6ee/` (keyboard) → `POST …/coupons/` (`DEMO10`) → `DELETE …/coupons/{coupon_id}/` → `PUT …/address/` → `PUT …/payment-method/` (`dummy_success`) → `PUT …/business-details/` → `POST …/checkout/` with **`Idempotency-Key`** — all returned **200** except checkout **202**. All canonical RESTful paths validated live on 2026-05-11.
 
-**Idempotency replay:** second `POST /api/v1/cart/checkout/` with **identical** `Idempotency-Key: a54bc470-e29b-41d4-a716-446655440001` and body `{}` returned **202** with same `order_id` / `payment_id` as first response (no duplicate checkout execution).
+**Legacy endpoint verified:** `POST /api/v1/cart/add-product/` returned **200** and is confirmed `deprecated: true` in the OpenAPI schema.
+
+**Idempotency replay:** second `POST /api/v1/cart/checkout/` with **identical** `Idempotency-Key` and body `{}` returned **202** with same `order_id` / `payment_id` as first response (no duplicate checkout execution).
 
 **Rate limit smoke:** eleven `POST …/checkout/` requests in the same minute with that key produced **ten × 202** then **`429`** `application/problem+json` type `https://cart-system.local/problems/rate-limit/exceeded`. **`Retry-After`** header not present on this response.
-
-**Logs:** `web` logs show `checkout.started` → `checkout.transaction_committed` → `checkout.completed`, tenant UUID, `X-Request-Id` where supplied; `worker` shows `authorize_payment` → **AUTHORIZED** and `generate_invoice` → **generated** for order `d61cd139-b559-4af1-bf30-c7c4ccf00fff`. Earlier worker lines show stale invoice tasks from **pytest** (`Order … not found — skipping`) — benign redis-queue residue after tests; not part of the successful live flow.
 
 ---
 
@@ -452,7 +453,7 @@ These are **scope boundaries**, not defects. Each item is explicitly disclosed i
 
 - All 17 original assignment requirements are implemented, wired, and tested.
 - **RESTful API convention:** canonical RESTful endpoints are now the preferred interface (`POST /cart/items/`, `DELETE /cart/items/{id}/`, `POST /cart/coupons/`, `DELETE /cart/coupons/{id}/`, `PUT /cart/address/`, `PUT /cart/payment-method/`, `PUT /cart/business-details/`). Legacy action-style routes remain as **deprecated backwards-compatible aliases** — all are `deprecated: true` in the OpenAPI schema and regression-tested in `test_views_rest.py`.
-- **393 passed, 5 skipped, 0 failed** — host SQLite gate re-confirmed 2026-05-11 (`5.52s`); Docker Postgres gate last validated 2026-05-08 ([§2.4](#24-docker--postgres-runtime-parity-2026-05-08)). Docker daemon unavailable on this verification pass — no code changes to models, services, or Docker configuration were made; the 2026-05-08 result remains valid.
+- **393 passed, 5 skipped, 0 failed** — host SQLite gate re-confirmed 2026-05-11 (`9.99s`); Docker Postgres gate re-validated 2026-05-11 (`48.53s`). Full Docker / Postgres / Redis runtime gate passed — all four services running, migrations applied, seed idempotent, in-container pytest green, canonical RESTful endpoints validated live.
 - `ruff check .` → exit 0 (`All checks passed!`).
 - `ruff format --check .` → exit 0 (`187 files already formatted`).
 - OpenAPI schema validates with no warnings — re-confirmed 2026-05-11 (`python manage.py spectacular --validate`, exit 0).

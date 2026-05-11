@@ -102,12 +102,21 @@ Full step-by-step flows with sequence diagrams: [`docs/architecture.md`](docs/ar
 ## 3. Reliability Guarantees
 
 - **Tenant isolation.** `TenantMiddleware` resolves the tenant from `X-Tenant-Domain` and stores it in a `ContextVar`. `TenantAwareManager` is the default ORM manager on every model — all queries are automatically scoped. `tenant_id` leads every composite index.
-- **Idempotent checkout.** `Idempotency-Key` triggers a two-layer check: a Redis sentinel (`SET NX EX`) for fast in-progress detection, and a PostgreSQL `IdempotencyRecord` for durable replay. Replayed responses are bit-for-bit identical — the serialized payload is stored, not recomputed.
+- **Idempotent checkout.** Every checkout request must include an `Idempotency-Key` HTTP header (a client-generated UUID). The server enforces three replay rules:
+  - **Same key + same body** → returns the stored response verbatim without re-executing side-effects.
+  - **Same key + different body** → `409 idempotency/conflict`.
+  - **Same key while the original request is still processing** → `409 idempotency/in-progress` (back off and retry with the same key).
+
+  Durable idempotency records live in PostgreSQL (`IdempotencyRecord` table, unique on `(tenant_id, key)`). Redis is used only for in-progress coordination — a `SET NX EX` sentinel detects concurrent duplicates ahead of the durable Postgres check. A Redis flush loses no completed replay data; at worst a brief window of duplicate in-progress detection is lost until the sentinel TTL would have expired anyway.
 - **Distributed lock.** Checkout acquires a Redis lock with `SET NX PX`. Release uses a Lua-fenced script that only deletes the key if the token matches — preventing a slow checkout from releasing a lock it no longer owns.
 - **No overselling.** Stock deduction uses a conditional update: `UPDATE … SET stock = stock - qty WHERE stock >= qty`. Zero rows affected raises a 409 before the transaction commits. No application-level read-then-write race is possible.
 - **`transaction.on_commit` discipline.** Every Celery dispatch (`enqueue_authorize_payment`, `enqueue_generate_invoice`) is registered with `on_commit`. A transaction that rolls back never orphans a payment or invoice task.
 - **Cache invalidation.** `schedule_cart_cache_invalidation` is called on every cart mutation — add/remove product, coupon changes, address and payment method updates, checkout. Stale entries are never served after a write.
 - **Async retry handling.** Workers use `acks_late` and prefetch 1 so tasks are not lost on worker crash. Every task is written to be idempotent — Celery re-deliveries are safe no-ops. Gateway timeouts retry with exponential backoff and jitter.
+
+### Why idempotency matters
+
+Idempotency is critical for payment and checkout APIs because clients may retry after timeouts. The server must avoid duplicate orders, duplicate stock deduction, and duplicate payment attempts. By storing the first successful response and replaying it on subsequent requests with the same key, the system guarantees exactly-once checkout semantics even when the network is unreliable.
 
 ---
 

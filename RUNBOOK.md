@@ -171,6 +171,38 @@ curl -s -X POST http://localhost:8000/api/v1/cart/checkout/ \
   -H "Idempotency-Key: $IDEM_KEY"
 ```
 
+### 3.7b Idempotency conflict
+
+Using the **same** `Idempotency-Key` with a **different** request body returns `409 idempotency/conflict`:
+
+```bash
+IDEM_KEY="550e8400-e29b-41d4-a716-446655440000"
+
+# First attempt (succeeds with 202)
+curl -s -X POST http://localhost:8000/api/v1/cart/checkout/ \
+  -H "X-Tenant-Domain: demo.localhost" \
+  -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $IDEM_KEY"
+
+# Same key, different body — 409 conflict
+curl -s -X POST "http://localhost:8000/api/v1/carts/<cart_uuid>/checkout/" \
+  -H "X-Tenant-Domain: demo.localhost" \
+  -H "X-User-Id: 00000000-0000-0000-0000-000000000001" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $IDEM_KEY" \
+  -d '{"payment_method_id": "<different_pm_uuid>", "address_id": "<different_addr_uuid>"}'
+# Returns: {"type": "…/idempotency/conflict", "status": 409, …}
+```
+
+The server computes a SHA-256 hash of the canonical request body and compares it against the stored hash. A mismatch means the client reused a key for a logically different request — always generate a fresh UUID per checkout attempt.
+
+### 3.7c In-progress duplicate
+
+If a checkout request is still executing (e.g. waiting for a database lock or gateway timeout) and a second request arrives with the same `Idempotency-Key`, the server returns `409 idempotency/in-progress`. This is detected via a Redis `SET NX EX` sentinel that lives for 60 seconds.
+
+The correct client behaviour is to **back off for a few seconds and retry with the same key**. Once the original request completes, the retry will hit the durable replay path and return the stored response.
+
 ### 3.8 Resource-oriented checkout (with explicit cart_id)
 
 ```bash
@@ -300,6 +332,7 @@ To adjust limits, edit `DEFAULT_THROTTLE_RATES` in `cart_system/settings/base.py
 | `422 cart/checkout-incomplete` | No address or payment method selected | Call `PUT /cart/address/` and `PUT /cart/payment-method/` before checkout |
 | `409 cart/locked` | Redis lock held by concurrent checkout | Retry with back-off (~1 s) |
 | `409 idempotency/conflict` | Same `Idempotency-Key` with different body | Use a fresh UUID key |
+| `409 idempotency/in-progress` | Original request is still executing | Wait a few seconds and retry with the same key |
 | `422 product/out-of-stock` | Stock depleted between add-to-cart and checkout | Remove the item or reduce quantity |
 | `500` on checkout | Redis not reachable | Check `REDIS_URL`; verify `redis` service is healthy |
 | Worker not processing payments | Celery broker down | Restart `worker` service; verify Redis is up |

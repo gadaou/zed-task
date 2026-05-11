@@ -32,7 +32,7 @@ The API is built with Django REST Framework and documented through generated Ope
 
 ## 4. Strongest Reliability Mechanisms
 
-Checkout combines durable idempotency records in PostgreSQL with a Redis in-progress sentinel so retries and replays are handled explicitly. It also runs behind a Redis lock with fenced token-checked release, and critical write paths use `transaction.atomic` plus `select_for_update`.
+Checkout requires an `Idempotency-Key` HTTP header (client-generated UUID). The server enforces three replay rules: same key + same body returns the stored response without re-executing side-effects; same key + different body returns `409 idempotency/conflict`; same key while the original request is still processing returns `409 idempotency/in-progress`. Durable idempotency records live in PostgreSQL (`IdempotencyRecord`, unique on `(tenant_id, key)`); Redis is used only for in-progress coordination via a `SET NX EX` sentinel — a Redis flush loses no completed replay data. Checkout also runs behind a Redis lock with fenced token-checked release, and critical write paths use `transaction.atomic` plus `select_for_update`.
 
 Inventory correctness is enforced with conditional stock deduction (`WHERE stock >= quantity`) and coupon revalidation immediately before commit. Async dispatch always goes through `transaction.on_commit`, so rolled-back transactions never queue payment or invoice work. Invoice generation is split into an atomic DB phase and a PDF phase outside the transaction to make retries recoverable.
 
