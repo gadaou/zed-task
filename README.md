@@ -9,6 +9,9 @@ The architectural contract lives in [`PROJECT_SPEC.md`](PROJECT_SPEC.md).
 ## Reviewer Quickstart
 
 ```bash
+# 0. Copy the example env file (review DATABASE_URL / REDIS_URL if needed)
+cp .env.example .env
+
 # 1. Start all services (web, worker, db, redis) and run migrations automatically
 docker compose up --build
 
@@ -29,6 +32,7 @@ docker compose exec web pytest -q
 ## How to Review This Project in 5 Minutes
 
 ```bash
+cp .env.example .env
 docker compose up --build -d
 docker compose exec web python manage.py migrate
 docker compose exec web python manage.py seed_demo_data
